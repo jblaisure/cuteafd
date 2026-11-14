@@ -16,7 +16,7 @@ def narrow(x):
     return x.bfloat16().float()
 
 
-def attention_forward(inputs, layer, cfg, index):
+def attention_forward(inputs, layer, cfg, index, taps=None):
     local = index in cfg.local_layer_ids
     heads, kv_heads, dim = cfg.geometry(index)
     norms = ('attn_norm',) if local else ('q_input_norm', 'k_input_norm', 'v_input_norm')
@@ -29,11 +29,16 @@ def attention_forward(inputs, layer, cfg, index):
     r = project(xq, 'wr_du').reshape(-1, heads, cfg.d_rel)
     gate = project(xq, 'gate_attn').reshape(-1, heads, dim)
     sinks = project(xq, 'attn_sink_proj')
+    if taps is not None:
+        taps.update(pre_norm=xq.bfloat16(),q=q.flatten(1),r=r.flatten(1),gate=gate.flatten(1),sinks=sinks)
     kv = []
     for x, name, projection in [(xk, 'k', 'wk_dv'), (xv, 'v', 'wv_dv')]:
         stem = 'attn.'+name+'_sconv.'
         dynamic = None if local else linear(x, layer[stem+'weight_proj']).reshape(-1, kv_heads, cfg.sconv_kernel_size)
-        value = f32.short_conv(project(x, projection), layer[stem+('weight' if local else 'static_w')], dynamic)
+        projected = project(x, projection)
+        if taps is not None:
+            taps[name] = projected
+        value = f32.short_conv(projected, layer[stem+('weight' if local else 'static_w')], dynamic)
         kv.append(value.reshape(-1, kv_heads, dim))
     q = f32.l2_clip(q, cfg.qk_l2_clip_threshold, cfg.rms_norm_eps, layer['attn.q_l2_clip.scale'])
     k = f32.l2_clip(kv[0], cfg.qk_l2_clip_threshold, cfg.rms_norm_eps)
@@ -46,6 +51,9 @@ def attention_forward(inputs, layer, cfg, index):
     relative = narrow(linear(narrow(r), layer['attn.rel_logits_proj.proj'].T))
     q, k, v = narrow(q), narrow(k), narrow(v)
     length = len(q)
+    if taps is not None:
+        taps.update(q_bf16=q.bfloat16().flatten(1),relative=relative.bfloat16().flatten(1),
+            kv_step=torch.cat([k.flatten(1),v.flatten(1)],1).bfloat16())
     position = torch.arange(length, device=q.device)
     distance = position[:, None]-position[None, :]
     valid = distance>=0
@@ -66,13 +74,16 @@ def attention_forward(inputs, layer, cfg, index):
         denominator = numerator.sum(-1)+(sinks[:, head]-maximum).exp()
         out[:, head] = narrow((narrow(numerator)@v[:, head//(heads//kv_heads)])/denominator[:, None])
     gated = narrow(out*gate.sigmoid())
-    return linear(gated.reshape(length, -1), layer['attn.wo_ud.weight'])
+    wo = linear(gated.reshape(length, -1), layer['attn.wo_ud.weight'])
+    if taps is not None:
+        taps.update(attended=out.bfloat16().flatten(1),gated=gated.bfloat16().flatten(1),wo=wo)
+    return wo
 
 
 def layer_forward(partial, blocks, layer, cfg, index, taps=None):
     inputs = (f32.attn_res(blocks, partial, layer[f'attn_res.attn_queries.{index-1}'], cfg.rms_norm_eps)
               if blocks else (partial,) if index in cfg.local_layer_ids else (partial,)*3)
-    attention = f32.short_conv(attention_forward(inputs, layer, cfg, index), layer['attn_sconv.weight'])
+    attention = f32.short_conv(attention_forward(inputs, layer, cfg, index, taps=taps), layer['attn_sconv.weight'])
     first = index%cfg.n_layers_per_attn_res_block==0
     mixed = f32.attn_res([*blocks, partial] if first else blocks, attention if first else partial,
         layer[f'attn_res.mlp_queries.{index}'], cfg.rms_norm_eps, addend=None if first else attention)[0]
@@ -82,9 +93,12 @@ def layer_forward(partial, blocks, layer, cfg, index, taps=None):
         ids, weights = f32.route(logits, layer['mlp.gate.bias'], cfg.num_experts_per_tok, cfg.route_scale)
         selection = logits.sigmoid()+layer['mlp.gate.bias']
         ordered = selection.sort(-1, descending=True).values
-        taps.update(projection_input=mlp_input.bfloat16(), route_logits=logits, route_ids=ids.int(),
+        taps.update(projection_input=mlp_input.bfloat16(), mlp_norm=mlp_input.bfloat16(), route_logits=logits, route_ids=ids.int(),
             route_weights=weights, route_margin=ordered[:, cfg.num_experts_per_tok-1]-ordered[:, cfg.num_experts_per_tok])
-    mlp = f32.short_conv(vendor.moe_forward(mlp_input, layer, cfg), layer['mlp_sconv.weight'])
+    expert = vendor.moe_forward(mlp_input, layer, cfg)
+    if taps is not None:
+        taps['expert_output'] = expert.bfloat16()
+    mlp = f32.short_conv(expert, layer['mlp_sconv.weight'])
     result = attention+mlp if first else (partial+attention)+mlp
     if taps is not None:
         taps['partial'] = result

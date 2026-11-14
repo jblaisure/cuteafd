@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--snapshot',type=Path,required=True)
     parser.add_argument('--native-dumps',type=Path,required=True)
     parser.add_argument('--out',type=Path,required=True)
+    parser.add_argument('--layers',default='')
     args=parser.parse_args()
     torch.cuda.set_device(0)
     torch.backends.cuda.matmul.allow_tf32=False
@@ -39,8 +40,12 @@ def main():
         return dict(rms=float((a-b).norm()/b.norm()),cosine=float((a@b)/(a.norm()*b.norm())),max_abs=float((a-b).abs().max()))
     with torch.inference_mode():
         folders=sorted(args.native_dumps.glob('layer-*'),key=lambda p:int(p.name.split('-')[1]))
+        selected={int(x) for x in args.layers.split(',') if x}
         for folder in folders:
-            index=int(folder.name.split('-')[1]);meta=json.loads((folder/'meta.json').read_bytes())
+            index=int(folder.name.split('-')[1])
+            if selected and index not in selected:
+                continue
+            meta=json.loads((folder/'meta.json').read_bytes())
             rows,h=meta['rows'],meta['hidden']
             partial=read(folder/'input_partial.bin','<f4',(rows,h))
             arena=read(folder/'input_arena.bin','<f4',(meta['arena_candidates'],meta['arena_rows'],h))
