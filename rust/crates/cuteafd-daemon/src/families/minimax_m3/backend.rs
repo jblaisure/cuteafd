@@ -603,14 +603,16 @@ mod tests {
         let native = std::env::var("CUTEAFD_NATIVE_LIB")?;
         let manifest = std::env::var("CUTEAFD_PROGRAM_MANIFEST")?;
         let peers = std::env::var("CUTEAFD_GOLDEN_PEERS")?;
+        let capacity = if std::env::var("CUTEAFD_MINIMAX_PROOF_NATIVE_ROWS").as_deref() == Ok("on") { 8 } else { 4 };
+        let capacity_text = capacity.to_string();
         let mut argv = vec!["cuteafd", "serve-minimax", "--snapshot", &snapshot,
             "--native-lib", &native, "--manifest", &manifest, "--peers", &peers,
-            "--max-sequences", "4", "--dspark"];
+            "--max-sequences", &capacity_text, "--dspark"];
         let split = std::env::var("CUTEAFD_MINIMAX_PROOF_SPLIT").unwrap_or_else(|_| "off".into());
         if split == "on" { argv.extend(["--split-device", "1"]); }
         let crate::cli::Commands::ServeMinimax(mut args) = crate::cli::Cli::try_parse_from(argv)?.command
             else { unreachable!() };
-        args.prefix.resolve_entries(4);
+        args.prefix.resolve_entries(capacity);
         let view = args.attention.select(&args.snapshot)?;
         args.attention.validate_view(&view)?;
         let checkpoint = Checkpoint::coordinator_view(&view, false, false)?;
@@ -629,7 +631,7 @@ mod tests {
                 attention_placement: cuteafd_loader::placement::attention::parse(&args.attention_placement).map_err(anyhow::Error::msg)?
                     .unwrap_or(cuteafd_loader::placement::AttentionPlacement::Heads),
                 prefill: PrefillShape { rows: prefill.unit_rows, waves: prefill.waves },
-                sequences: 4, context_tokens: 0, pool_tokens: None,
+                sequences: capacity as u64, context_tokens: 0, pool_tokens: None,
                 onboard: args.rtx_expert_layers.resolve(cfg.moe.iter().filter(|&&moe| moe).count()),
                 prefix: &args.prefix, expert_usage: args.expert_usage,
                 usage_reader: args.expert_usage_reader.clone(),
@@ -708,6 +710,89 @@ mod tests {
             Ok(serde_json::json!({"position":64,"max_abs":maximum,"argmax_agreement":agrees as f64/count as f64,
                 "kl":kl/count as f64}))
         };
+        if std::env::var("CUTEAFD_MINIMAX_PROOF_NATIVE_ROWS").as_deref() == Ok("on") {
+            let pages=pool.alloc((prompt+8).div_ceil(PAGE_ROWS))?;
+            let mut results=Vec::new();
+            for width in 2..=8 {
+                let mut serial_logits=Vec::new();
+                let mut serial_taps=Vec::new();
+                let mut serial_state=String::new();
+                let mut initial=None;
+                for arm in ["serial","packed"] {
+                    backend.drain()?;
+                    for bank in &banks {
+                        for layer in bank.layers.clone() {
+                            for &page in &pages {
+                                for (plane,_) in super::super::cache::PAGE_PLANES {
+                                    let buffer=bank.page(layer,plane,page)?;
+                                    bank.stream.device.run(|| {
+                                        // SAFETY: proof owns these pages and all prior consumers drained.
+                                        unsafe { library.cuda_zero_bytes_async(buffer,buffer.bytes,bank.stream.raw) }
+                                    })?;
+                                }
+                            }
+                        }
+                    }
+                    let mut prefix=Placement { units:pages.clone(),slot:0,len:0 };
+                    family.bind(&mut prefix).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    backend.identities.borrow_mut().insert(0,1);
+                    backend.prefill_device(&mut prefix,&tokens[..prompt],0,&pool)?;
+                    let before=target_state(std::slice::from_ref(&prefix),None)?;
+                    if let Some(expected)=&initial { ensure!(&before==expected,"native row proof prefill differs"); }
+                    else { initial=Some(before); }
+                    let mut all_logits=Vec::new();
+                    let mut all_taps=Vec::new();
+                    let groups=if arm=="serial" { width } else { 1 };
+                    for group in 0..groups {
+                        let first=if arm=="serial" { group } else { 0 };
+                        let count=if arm=="serial" { 1 } else { width };
+                        // Logical slots distinguish query metadata, not physical
+                        // ownership. Append positions are disjoint, all rows' KV
+                        // is written before any attention query reads its causal end.
+                        let mut placements=(0..count).map(|row| Placement {
+                            units:pages.clone(),slot:row,len:prompt+first+row }).collect::<Vec<_>>();
+                        let requests=placements.iter_mut().enumerate().map(|(row,placement)| ServingRequest {
+                            identity:(row+1) as u64,kind:ExpertV2SourceKind::Decode,start:placement.len,
+                            heads:placement.len..placement.len+1,tokens:&tokens[prompt+first+row..prompt+first+row+1],placement
+                        }).collect::<Vec<_>>();
+                        let logits=backend.execution.borrow_mut().decode(&backend.owners.storage,&cfg,&backend.schedule,
+                            &requests,&mut backend.owners.graphs.borrow_mut(),false)?;
+                        all_logits.extend(logits.to_host(&library)?.iter().flat_map(|v| v.to_le_bytes()));
+                        let owner=backend.owners.storage.ranks.last().unwrap().decode.borrow();
+                        all_taps.extend(read(owner.target_taps().context("native row taps")?.output(),count*tap_pitch)?);
+                    }
+                    prefix.len=prompt+width;
+                    let state=target_state(std::slice::from_ref(&prefix),None)?;
+                    if arm=="serial" {
+                        serial_logits=all_logits;serial_taps=all_taps;serial_state=state;
+                    } else {
+                        let mut row_results=Vec::new();
+                        for row in 0..width {
+                            let a=&serial_logits[row*cfg.vocab_size*4..(row+1)*cfg.vocab_size*4];
+                            let b=&all_logits[row*cfg.vocab_size*4..(row+1)*cfg.vocab_size*4];
+                            let ta=&serial_taps[row*tap_pitch..(row+1)*tap_pitch];
+                            let tb=&all_taps[row*tap_pitch..(row+1)*tap_pitch];
+                            row_results.push(serde_json::json!({"row":row,"logits_identical":a==b,
+                                "taps_identical":ta==tb,"gap":gap(a,b)?}));
+                        }
+                        let exact=serial_logits==all_logits && serial_taps==all_taps && serial_state==state;
+                        results.push(serde_json::json!({"width":width,"exact":exact,
+                            "kv_index_identical":serial_state==state,"rows":row_results}));
+                    }
+                    family.discard(&mut prefix).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                }
+            }
+            let exact=results.iter().all(|r| r["exact"]==true);
+            let report=serde_json::json!({"exact":exact,"reference":"sequential native one-row decode",
+                "append_order":"all projected KV/index rows precede per-query causal attention",
+                "results":results});
+            println!("MiniMax native multirow invariance: {report}");
+            std::fs::write(Path::new(&std::env::var("CUTEAFD_GOLDEN_OUT")?).join("native-multirow-invariance.json"),
+                serde_json::to_vec_pretty(&report)?)?;
+            pool.release(&pages);
+            ensure!(exact,"native multirow logits/taps/KV bytes are not row-invariant");
+            return Ok(());
+        }
         if std::env::var("CUTEAFD_MINIMAX_PROOF_REFERENCE").as_deref() == Ok("on") {
             use cuteafd_bench::{fidelity_dataset, reference::Fidelity};
             use cuteafd_api::openai::probe::{Probe, ProbeSpec};
