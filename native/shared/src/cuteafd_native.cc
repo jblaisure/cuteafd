@@ -2,6 +2,7 @@
 #include "cuteafd_native.h"
 #if CUTEAFD_NATIVE_ENABLE_CUDA
 #include "cuteafd_graph_diagnostics.h"
+#include "graph_census_update.h"
 #endif
 #include "graph_census_path.h"
 #include "rdma_endpoint_destroy.h"
@@ -646,9 +647,14 @@ std::string census_driver_identity() {
       + ",\"nvml_driver_version\":" + nvml;
 }
 
+cuteafd::CensusUpdateProbe& graph_census_update_probe() {
+  static cuteafd::CensusUpdateProbe probe;
+  return probe;
+}
+
 void record_graph_census(cudaGraph_t graph, cudaGraphExec_t exec,
                          cudaError_t before_status, size_t before_free,
-                         cudaError_t after_status, size_t after_free) {
+                         cudaError_t after_status, size_t after_free, double instantiate_us) {
   static std::atomic<uint64_t> serial{0};
   static const std::string driver = census_driver_identity();
   int device = -1;
@@ -660,11 +666,15 @@ void record_graph_census(cudaGraph_t graph, cudaGraphExec_t exec,
     status = cuteafd::diagnostic_cuda(cudaGraphGetNodes(graph, nodes.data(), &count));
   }
   std::string details = "[";
+  std::vector<uint64_t> signature{count};
+  cudaError_t signature_status = status;
   if (status == cudaSuccess) {
     for (size_t i = 0; i < count; ++i) {
       if (i) { details += ','; }
       cudaGraphNodeType type;
       const cudaError_t type_status = cuteafd::diagnostic_cuda(cudaGraphNodeGetType(nodes[i], &type));
+      if (type_status != cudaSuccess) signature_status = type_status;
+      signature.push_back(type_status == cudaSuccess ? static_cast<uint64_t>(type) : UINT64_MAX);
       details += "{\"kind\":" + std::to_string(type_status == cudaSuccess ? static_cast<int>(type) : -1);
       if (type_status == cudaSuccess && type == cudaGraphNodeTypeKernel) {
         CUDA_KERNEL_NODE_PARAMS driver_params{};
@@ -673,6 +683,12 @@ void record_graph_census(cudaGraph_t graph, cudaGraphExec_t exec,
         cudaKernelNodeParams params{};
         const char* name = nullptr;
         cudaError_t name_status = cuteafd::diagnostic_cuda(cudaGraphKernelNodeGetParams(nodes[i], &params));
+        // Driver function identities cover runtime and driver-loaded AOT kernels.
+        const uint64_t function = params_status == CUDA_SUCCESS
+            ? reinterpret_cast<uintptr_t>(driver_params.func)
+            : (name_status == cudaSuccess ? reinterpret_cast<uintptr_t>(params.func) : 0);
+        signature.push_back(function);
+        if (!function) signature_status = cudaErrorNotSupported;
 #if CUDART_VERSION >= 13000
         if (name_status == cudaSuccess) { name_status = cuteafd::diagnostic_cuda(cudaFuncGetName(&name, params.func)); }
 #else
@@ -739,6 +755,22 @@ void record_graph_census(cudaGraph_t graph, cudaGraphExec_t exec,
     return std::fopen(cuteafd_graph_census_captures_path(std::getenv("CUTEAFD_PROFILE_DIR"), host).c_str(), "a");
   }();
   const uint64_t id = serial.fetch_add(1) + 1;
+  const auto topology = cuteafd::census_topology(graph, nodes, std::move(signature), signature_status);
+  const auto update = graph_census_update_probe().capture(true, graph, exec, topology, device, id);
+  char measurement[2048];
+  std::snprintf(measurement, sizeof(measurement),
+      "\"topology_hash\":\"%016llx\",\"topology_status\":%d,\"instantiate_us\":%.3f,"
+      "\"update_donor_id\":%llu,\"scratch_instantiate_status\":%d,\"update_status\":%d,"
+      "\"update_result\":%d,\"update_us\":%.3f,\"update_error_node\":\"%p\","
+      "\"update_error_from_node\":\"%p\",\"scratch_destroy_status\":%d,"
+      "\"clone_status\":%d,\"diagnostic_memory_status\":%d,\"clone_bytes\":%lld,"
+      "\"scratch_peak_bytes\":%lld,\"scratch_retained_bytes\":%lld",
+      static_cast<unsigned long long>(topology.hash), static_cast<int>(topology.status), instantiate_us,
+      static_cast<unsigned long long>(update.donor_id), update.donor_status, update.update_status,
+      update.update_result, update.update_us, update.error_node, update.error_from_node,
+      update.scratch_destroy_status, update.clone_status, update.memory_status,
+      static_cast<long long>(update.clone_bytes), static_cast<long long>(update.scratch_peak_bytes),
+      static_cast<long long>(update.scratch_retained_bytes));
   int runtime_version = 0;
   cuteafd::diagnostic_cuda(cudaRuntimeGetVersion(&runtime_version));
   if (captures == nullptr) {
@@ -750,9 +782,9 @@ void record_graph_census(cudaGraph_t graph, cudaGraphExec_t exec,
   const int written = std::fprintf(captures,
       "CUTEAFD_GRAPH_CENSUS {\"event\":\"capture\",\"id\":%llu,\"exec\":\"%p\",\"device\":%d,"
       "\"cuda_runtime_version\":%d,"
-      "\"nodes\":%zu,\"node_status\":%d,\"instantiate_bytes\":%lld,\"bytes_valid\":%s,%s,\"details\":%s}\n",
+      "\"nodes\":%zu,\"node_status\":%d,\"instantiate_bytes\":%lld,\"bytes_valid\":%s,%s,%s,\"details\":%s}\n",
       static_cast<unsigned long long>(id), reinterpret_cast<void*>(exec), device,
-      runtime_version, count, static_cast<int>(status), static_cast<long long>(delta), bytes_valid ? "true" : "false", driver.c_str(), details.c_str());
+      runtime_version, count, static_cast<int>(status), static_cast<long long>(delta), bytes_valid ? "true" : "false", driver.c_str(), measurement, details.c_str());
   const bool saved = std::fflush(captures) == 0 && written >= 0;
   funlockfile(captures);
   std::fprintf(stderr, "CUTEAFD_GRAPH_CENSUS {\"event\":\"%s\",\"id\":%llu,\"exec\":\"%p\"}\n",
@@ -1882,8 +1914,11 @@ static cuteafd_status_t end_capture_retained(void* cuda_stream,
   size_t before_free = 0, after_free = 0, total = 0;
   const bool census = graph_census_enabled();
   const cudaError_t before_status = census ? cuteafd::diagnostic_cuda(cudaMemGetInfo(&before_free, &total)) : cudaSuccess;
+  const auto instantiate_start = census ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   // Third-party residual: CUDA owns graph executable storage, retired by cudaGraphExecDestroy.
   err = CUTEAFD_CHECK_MEMORY("cudaGraphInstantiate", "cuda", cudaGraphInstantiate(&graph_exec, graph, 0), 0, 0, graph);
+  const double instantiate_us = census ? std::chrono::duration<double, std::micro>(
+      std::chrono::steady_clock::now() - instantiate_start).count() : 0;
   const cudaError_t after_status = census ? cuteafd::diagnostic_cuda(cudaMemGetInfo(&after_free, &total)) : cudaSuccess;
   if (err != cudaSuccess) {
     if (graph_exec != nullptr) cudaGraphExecDestroy(graph_exec);
@@ -1914,7 +1949,7 @@ static cuteafd_status_t end_capture_retained(void* cuda_stream,
     cuteafd::diagnostic_cuda(cudaGraphDestroy(graph));
     return status;
   }
-  if (census) { record_graph_census(graph, graph_exec, before_status, before_free, after_status, after_free); }
+  if (census) { record_graph_census(graph, graph_exec, before_status, before_free, after_status, after_free, instantiate_us); }
   return ok();
 #else
   return fail(CUTEAFD_STATUS_CUDA_UNAVAILABLE,
@@ -2001,6 +2036,9 @@ extern "C" cuteafd_status_t cuteafd_cuda_graph_exec_destroy(void* cuda_graph_exe
     return fail_cuda(CUTEAFD_STATUS_INTERNAL_ERROR, "cudaGraphExecDestroy failed", err);
   }
   if (graph_census_enabled()) {
+    const auto clone_status = graph_census_update_probe().retire(reinterpret_cast<cudaGraphExec_t>(cuda_graph_exec));
+    std::fprintf(stderr, "CUTEAFD_GRAPH_CENSUS {\"event\":\"clone_destroy\",\"exec\":\"%p\",\"status\":%d}\n",
+        cuda_graph_exec, static_cast<int>(clone_status));
     std::fprintf(stderr, "CUTEAFD_GRAPH_CENSUS {\"event\":\"destroy\",\"exec\":\"%p\"}\n", cuda_graph_exec);
   }
   return ok();

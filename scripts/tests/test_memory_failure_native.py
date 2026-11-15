@@ -143,6 +143,7 @@ def test_graph_capture_failure_clears_last_error_before_peer_eager_retry(tmp_pat
     source.write_text(r'''
 #include "cuteafd_native.h"
 #include <cassert>
+#include <chrono>
 #include <string>
 #define CUTEAFD_NATIVE_ENABLE_CUDA 1
 #define CUTEAFD_CHECK_MEMORY(api, domain, call, bytes, known, handle) (call)
@@ -183,7 +184,7 @@ int cudaGraphGetNodes(void*, void**, size_t* nodes) { *nodes = graph_nodes; retu
 static cuteafd_status_t end_capture_retained(void*, cuteafd_cuda_graph_capture_info_t*, bool);
 int cudaMemGetInfo(size_t* free, size_t* total) { *free = 1 << 20; *total = 2 << 20; return 0; }
 bool graph_census_enabled() { return census; }
-void record_graph_census(void*, void*, int, size_t, int, size_t) {}
+void record_graph_census(void*, void*, int, size_t, int, size_t, double) {}
 cuteafd_status_t ok() { message.clear(); return CUTEAFD_STATUS_OK; }
 cuteafd_status_t fail(cuteafd_status_t status, const char* action) { message = action; return status; }
 cuteafd_status_t fail_cuda(cuteafd_status_t status, const char* action, int error) {
@@ -320,3 +321,108 @@ def test_cmake_rejects_wrapped_source_without_real_callbacks(tmp_path):
     result = subprocess.run([cmake, "-S", str(tmp_path), "-B", str(tmp_path / "linked")],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_census_update_probe_is_opt_in_and_never_updates_live_exec(tmp_path):
+    compiler = shutil.which("g++")
+    if not compiler:
+        pytest.skip("C++ compiler unavailable")
+    header = (ROOT / "native/shared/include/graph_census_update.h").read_text().replace(
+        '#include "cuteafd_graph_diagnostics.h"', '').replace('#pragma once', '')
+    fixture = tmp_path / "census_update.cc"
+    fixture.write_text(r'''
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+using cudaError_t = int;
+using cudaGraph_t = void*;
+using cudaGraphNode_t = void*;
+using cudaGraphExec_t = void*;
+constexpr int cudaSuccess = 0, cudaErrorInvalidValue = 1, cudaErrorNotSupported = 801;
+struct cudaGraphEdgeData { unsigned char from_port = 0, to_port = 0, type = 0; };
+struct cudaGraphExecUpdateResultInfo { int result = 0; void* errorNode = nullptr; void* errorFromNode = nullptr; };
+static int clones = 0, instantiates = 0, updates = 0, destroyed = 0, graph_destroyed = 0, queries = 0;
+static int update_error = 0, clone_error = 0, instantiate_error = 0, edge_mode = 0;
+static void* scratch = reinterpret_cast<void*>(0x999);
+int cudaMemGetInfo(size_t* free, size_t* total) { ++queries; *free = 1000; *total = 2000; return 0; }
+int cudaGraphInstantiate(void** exec, void*, int) {
+  ++instantiates; *exec = scratch; return instantiate_error;
+}
+int cudaGraphClone(void** graph, void*) { ++clones; *graph = reinterpret_cast<void*>(0x100 + clones); return clone_error; }
+int cudaGraphExecUpdate(void* exec, void*, cudaGraphExecUpdateResultInfo* info) {
+  assert(exec == scratch); ++updates;
+  info->result = update_error ? 7 : 0; info->errorNode = reinterpret_cast<void*>(0x12);
+  info->errorFromNode = reinterpret_cast<void*>(0x13); return update_error;
+}
+int cudaGraphExecDestroy(void* exec) { assert(exec == scratch); ++destroyed; return 0; }
+int cudaGraphDestroy(void*) { ++graph_destroyed; return 0; }
+int cudaGraphGetEdges(void*, void** from, void** to, cudaGraphEdgeData* data, size_t* count) {
+  if (edge_mode == 3) return 77;
+  assert(*count >= 2); *count = 1;
+  from[0] = reinterpret_cast<void*>(edge_mode == 2 ? 999 : 1);
+  to[0] = reinterpret_cast<void*>(2); data[0].type = edge_mode == 1 ? 1 : 0;
+  return 0;
+}
+namespace cuteafd { inline int diagnostic_cuda(int status) { return status; } }
+''' + header + r'''
+int main() {
+  cuteafd::CensusUpdateProbe probe;
+  const std::vector<void*> nodes{reinterpret_cast<void*>(1), reinterpret_cast<void*>(2)};
+  auto topology = cuteafd::census_topology(nullptr, nodes, {2, 0, 100, 0, 200}, 0);
+  assert(topology.status == 0);
+  assert(topology.hash == cuteafd::census_topology(nullptr, nodes, {2, 0, 100, 0, 200}, 0).hash);
+  assert(topology.hash != cuteafd::census_topology(nullptr, nodes, {2, 0, 101, 0, 200}, 0).hash);
+  edge_mode = 1;
+  assert(topology.hash != cuteafd::census_topology(nullptr, nodes, {2, 0, 100, 0, 200}, 0).hash);
+  edge_mode = 2;
+  assert(cuteafd::census_topology(nullptr, nodes, {}, 0).status == cudaErrorInvalidValue);
+  edge_mode = 3;
+  assert(cuteafd::census_topology(nullptr, nodes, {}, 0).status == 77);
+  edge_mode = 0;
+  void* graph = reinterpret_cast<void*>(0x44);
+  void* first = reinterpret_cast<void*>(0x55);
+  void* second = reinterpret_cast<void*>(0x66);
+  probe.capture(false, graph, first, topology, 0, 1);
+  assert(clones == 0 && instantiates == 0 && updates == 0 && queries == 0);
+  auto result = probe.capture(true, graph, first, topology, 0, 1);
+  assert(clones == 1 && instantiates == 0 && result.donor_id == 0);
+  result = probe.capture(true, graph, second, topology, 0, 2);
+  assert(result.donor_id == 1 && result.update_result == 0 && updates == 1 && destroyed == 1);
+  assert(result.clone_bytes == 0 && result.scratch_peak_bytes == 0);
+  assert(probe.retire(first) == 0 && probe.retire(first) == 0 && graph_destroyed == 1);
+  update_error = 910;
+  result = probe.capture(true, graph, first, topology, 0, 3);
+  assert(result.donor_id == 2 && result.update_status == 910 && result.update_result == 7);
+  assert(result.error_node == reinterpret_cast<void*>(0x12) && result.error_from_node == reinterpret_cast<void*>(0x13));
+  assert(destroyed == 2);
+  probe.retire(first); probe.retire(second);
+  assert(graph_destroyed == 3);
+  result = probe.capture(true, graph, first, topology, 0, 4);
+  assert(result.donor_id == 0); // No stale donor survives its executable.
+  auto unknown = topology; unknown.status = 99;
+  const int old_clones = clones;
+  probe.capture(true, graph, second, unknown, 0, 5);
+  assert(clones == old_clones);
+  probe.capture(true, graph, second, topology, 1, 6); // Different device is not a donor.
+  assert(updates == 2);
+  probe.retire(second);
+  instantiate_error = 2;
+  result = probe.capture(true, graph, second, topology, 0, 7);
+  assert(result.donor_status == 2 && result.update_result == -1 && updates == 2 && destroyed == 3);
+  probe.retire(first); probe.retire(second);
+  clone_error = 2;
+  result = probe.capture(true, graph, first, topology, 0, 8);
+  assert(result.clone_status == 2);
+  const int old_destroyed = graph_destroyed;
+  probe.retire(first);
+  assert(graph_destroyed == old_destroyed); // Failed partial clone cleaned up immediately.
+}
+''')
+    binary = tmp_path / "census_update"
+    built = subprocess.run([compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pthread",
+                            str(fixture), "-o", str(binary)], capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    ran = subprocess.run([str(binary)], capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
