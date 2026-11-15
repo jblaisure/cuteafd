@@ -89,6 +89,12 @@ pub(crate) struct Counters {
     pub eager_runs: u64,
     pub evictions: u64,
     pub physical_floor_skips: u64,
+    pub eager_awaiting_destroy: u64,
+    pub eager_soft_room: u64,
+    pub eager_hard_stop: u64,
+    pub eager_sealed: u64,
+    pub eager_preference: u64,
+    pub eager_other: u64,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -936,7 +942,13 @@ impl DeviceCache {
             stats.misses += 1;
             stats.ghost_hits += u64::from(ghost.is_some());
         }
-        self.counters.entry(site.cycle).or_default().eager_runs += 1;
+        let counters = self.counters.entry(site.cycle).or_default();
+        counters.eager_runs += 1;
+        if sealed { counters.eager_sealed += 1; }
+        else if site.preference == Preference::Eager { counters.eager_preference += 1; }
+        else if self.pending_destroy > 0 { counters.eager_awaiting_destroy += 1; }
+        else if !room { counters.eager_soft_room += 1; }
+        else { counters.eager_other += 1; }
         Miss::Eager
     }
 
