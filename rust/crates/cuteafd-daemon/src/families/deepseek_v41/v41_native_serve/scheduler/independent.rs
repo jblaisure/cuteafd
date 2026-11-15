@@ -403,7 +403,7 @@ async fn lane<'a, P: VerificationTarget<'a>, C: DraftChain<'a>>(lease: LaneLease
             // Return both drained lanes to the full-bank completed visitor.
             // Otherwise a victim in an inactive/prefill bank can gate captures
             // for the rest of this lane set, rather than one completed round.
-            if crate::shared::decode_graph::device::retirement_pending() {
+            if crate::shared::decode_graph::device::completed_lane_round(lane) {
                 lease.stop();
                 return Ok(());
             }

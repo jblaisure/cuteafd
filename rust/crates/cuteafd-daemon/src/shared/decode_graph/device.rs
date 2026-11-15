@@ -129,15 +129,38 @@ pub(crate) struct Snapshot {
     pub top_churn: Vec<TraceRow>,
     pub rankings_age_ms: u64,
     pub pending_victims: Vec<PendingVictims>,
+    pub retirement: Retirement,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct PendingVictims { pub bank: u64, pub site: &'static str, pub count: u64, pub nodes: u64 }
 
-pub(crate) fn retirement_pending() -> bool {
-    DEVICES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner()).values()
-        .filter_map(std::sync::Weak::upgrade)
-        .any(|cache| cache.lock().unwrap_or_else(|p| p.into_inner()).has_pending_victims())
+static RETIREMENT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Called only after a lane's commit/discard has completed. No work on the
+/// ordinary path; selected victims make both lanes yield to the full visitor.
+pub(crate) fn completed_lane_round(lane: usize) -> bool {
+    if !RETIREMENT_PENDING.load(std::sync::atomic::Ordering::Acquire) { return false }
+    let caches: Vec<_> = DEVICES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner()).values()
+        .filter_map(std::sync::Weak::upgrade).collect();
+    let mut pending = false;
+    for cache in caches {
+        let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.has_pending_victims() {
+            cache.note_retirement_round(lane);
+            pending = true;
+        }
+    }
+    if !pending { RETIREMENT_PENDING.store(false, std::sync::atomic::Ordering::Release); }
+    pending
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub(crate) struct Retirement {
+    pub lane_yields: [u64; 2],
+    pub retired: u64,
+    pub rounds_to_retire: [u64; 16],
+    pub max_rounds: u64,
 }
 
 /// Release observations are deliberately independent of cudaMemGetInfo. An
@@ -641,6 +664,8 @@ pub(crate) struct DeviceCache {
     chain_only: bool,
     unmeasured: bool,
     pending_destroy: usize,
+    pending_rounds: HashMap<u64, u64>,
+    retirement: Retirement,
     pending_banks: std::collections::BTreeMap<(u64, &'static str), (u64, u64)>,
     observer: GrowthObserver,
     memory_query: Option<cuteafd_ffi::PhysicalMemoryQuery>,
@@ -692,7 +717,7 @@ impl DeviceCache {
             recent_target: 0, records: HashMap::new(), identities: HashMap::new(),
             queues: std::array::from_fn(|_| Queue::default()), classes: HashMap::new(),
             pending_growth: 0, pools: Pools::default(), basis: Basis::Bytes,
-            chain_only: true, unmeasured: false, pending_destroy: 0, pending_banks: std::collections::BTreeMap::new(),
+            chain_only: true, unmeasured: false, pending_destroy: 0, pending_banks: std::collections::BTreeMap::new(), pending_rounds: HashMap::new(), retirement: Retirement::default(),
             observer: GrowthObserver::default(), memory_query: None, captured_since_observation: false,
             counters: HashMap::new(), started: Instant::now(), clock_ms: 0, last_report: Instant::now(),
             interval_evictions: 0, trace: std::env::var_os("CUTEAFD_GRAPH_TRACE").and_then(|path| {
@@ -897,6 +922,8 @@ impl DeviceCache {
         self.records.get_mut(&id).unwrap().frequent = frequent;
         self.records.get_mut(&id).unwrap().pending_destroy = true;
         self.pending_destroy += 1;
+        self.pending_rounds.insert(id, 0);
+        RETIREMENT_PENDING.store(true, std::sync::atomic::Ordering::Release);
         let record = &self.records[&id];
         let row = self.pending_banks.entry((record.identity.bank, record.identity.site)).or_default();
         row.0 += 1;
@@ -1247,7 +1274,7 @@ impl DeviceCache {
         if self.charged >= self.reserve { return }
         let native = self.native_pools();
         if self.soft.measured_bytes.is_none() {
-            self.soft.margin = self.soft.margin.max(growth.div_ceil(self.soft.granule).saturating_mul(self.soft.granule));
+            self.soft.margin = self.soft.margin.max(growth.saturating_mul(2).div_ceil(self.soft.granule).saturating_mul(self.soft.granule));
             self.soft.limit = self.reserve.saturating_sub(self.soft.margin);
             if self.charged < self.soft.limit || native.live_nodes == 0 || self.unmeasured { return }
             let pinned_nodes = self.records.values().filter(|r| r.pinned)
@@ -1312,9 +1339,19 @@ impl DeviceCache {
         self.apply_soft_pressure(bytes, completed);
     }
 
+    fn note_retirement_round(&mut self, lane: usize) {
+        self.retirement.lane_yields[lane] += 1;
+        for age in self.pending_rounds.values_mut() { *age = age.saturating_add(1); }
+    }
+
     fn clear_pending_bank(&mut self, id: u64) {
         let Some(record) = self.records.get(&id).filter(|r| r.pending_destroy) else { return };
         let key = (record.identity.bank, record.identity.site);
+        if let Some(age) = self.pending_rounds.remove(&id) {
+            self.retirement.retired += 1;
+            self.retirement.rounds_to_retire[age.min(15) as usize] += 1;
+            self.retirement.max_rounds = self.retirement.max_rounds.max(age);
+        }
         if let Some(row) = self.pending_banks.get_mut(&key) {
             row.0 = row.0.saturating_sub(1);
             row.1 = row.1.saturating_sub(record.stats.native_nodes.unwrap_or(0));
@@ -1430,7 +1467,7 @@ impl DeviceCache {
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(),
             basis: self.basis, sampled_at_ms: self.started.elapsed().as_millis() as u64,
             telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(),
-            top_hits: Vec::new(), top_churn: Vec::new(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows() },
+            top_hits: Vec::new(), top_churn: Vec::new(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows(), retirement: self.retirement.clone() },
             records, classes: self.classes.clone() }
     }
 
@@ -1471,7 +1508,7 @@ impl DeviceCache {
             level: self.level,
             pinned: self.inventory.pinned,
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(), basis: self.basis,
-            sampled_at_ms: now, telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(), top_hits: self.ranked_hits.clone(), top_churn: self.ranked_churn.clone(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows() }
+            sampled_at_ms: now, telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(), top_hits: self.ranked_hits.clone(), top_churn: self.ranked_churn.clone(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows(), retirement: self.retirement.clone() }
     }
 
     fn row(&self, record: &Record, now: u64) -> TraceRow {
@@ -1818,24 +1855,62 @@ mod tests {
     }
 
     #[test]
+    fn pending_bank_rows_and_round_latency_follow_destroy_and_drained_removal() {
+        let mut cache = test_cache(-1016, 64 * GRAPH_CHUNK);
+        let a = capture(&mut cache, 1, false);
+        cache.captured_topology(a, 11, 1, false);
+        let b = capture(&mut cache, 2, false);
+        cache.captured_topology(b, 17, 1, false);
+        assert_eq!(cache.mark_victim(false), Some(a));
+        assert_eq!(cache.mark_victim(false), Some(b));
+        let rows = cache.pending_victim_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].bank, rows[0].site, rows[0].count, rows[0].nodes), (1, "test", 2, 28));
+        cache.note_retirement_round(0);
+        cache.destroyed(&[a], ReleaseMeasurement { released: 0 });
+        assert_eq!(cache.pending_victim_rows()[0].count, 1);
+        cache.note_retirement_round(1);
+        cache.remove_drained(&[b]);
+        assert!(cache.pending_victim_rows().is_empty());
+        assert!(cache.pending_rounds.is_empty());
+        assert_eq!(cache.retirement.retired, 2);
+        assert_eq!(cache.retirement.rounds_to_retire[1], 1);
+        assert_eq!(cache.retirement.rounds_to_retire[2], 1);
+        assert_eq!(cache.retirement.max_rounds, 2);
+        assert_eq!(cache.retirement.lane_yields, [1, 1]);
+        assert_eq!(cache.pending_destroy, 0);
+    }
+
+    #[test]
+    fn doubled_margin_rounds_the_measured_growth_before_freezing() {
+        let mut cache = test_cache(-1017, 32 * GRAPH_CHUNK);
+        let id = capture(&mut cache, 1, false);
+        cache.captured_topology(id, 7, 1, false);
+        cache.apply_soft_pressure(GRAPH_CHUNK + 1, Some(id));
+        assert_eq!(cache.soft.margin, 3 * GRAPH_CHUNK, "2x growth rounded up, not 2x rounded growth");
+        assert_eq!(cache.soft.limit, 29 * GRAPH_CHUNK);
+        assert!(cache.soft.measured_bytes.is_none());
+    }
+
+    #[test]
     fn soft_ratio_and_margin_freeze_from_measured_crossing_and_ignore_reuse_shares() {
-        let mut cache = test_cache(-1004, 16 * GRAPH_CHUNK);
+        let mut cache = test_cache(-1004, 22 * GRAPH_CHUNK);
         let capture_site = Site { bootstrap: 1, ..site(Preference::Capture) };
         let mut owners = Vec::new();
-        for n in 0..4 {
+        for n in 0..5 {
             let Miss::Capture(id) = cache.miss(key(n), capture_site, None, false) else { panic!() };
             cache.captured_topology(id, 10, 1, false);
             cache.measured_capture(3 * GRAPH_CHUNK);
             owners.push(id);
         }
         assert!(cache.soft.measured_bytes.is_none());
-        let Miss::Capture(id) = cache.miss(key(4), capture_site, None, false) else { panic!() };
+        let Miss::Capture(id) = cache.miss(key(5), capture_site, None, false) else { panic!() };
         cache.captured_topology(id, 10, 1, false);
-        cache.measured_capture(2 * GRAPH_CHUNK);
-        assert_eq!(cache.soft.margin, 3 * GRAPH_CHUNK);
-        assert_eq!(cache.soft.limit, 13 * GRAPH_CHUNK);
-        assert_eq!(cache.soft.measured_bytes, Some(14 * GRAPH_CHUNK));
-        assert_eq!(cache.soft.measured_nodes, Some(50));
+        cache.measured_capture(3 * GRAPH_CHUNK);
+        assert_eq!(cache.soft.margin, 6 * GRAPH_CHUNK);
+        assert_eq!(cache.soft.limit, 16 * GRAPH_CHUNK);
+        assert_eq!(cache.soft.measured_bytes, Some(18 * GRAPH_CHUNK));
+        assert_eq!(cache.soft.measured_nodes, Some(60));
         assert_eq!(cache.pending_destroy, 1);
         let victims: Vec<_> = cache.records.iter().filter(|(_, r)| r.pending_destroy).map(|(&id, _)| id).collect();
         cache.destroyed(&victims, ReleaseMeasurement { released: 0 });
@@ -1849,11 +1924,11 @@ mod tests {
             assert_eq!(cache.pending_destroy, 0, "fitting hot set must settle above soft");
             assert_eq!((cache.soft.margin, cache.soft.measured_bytes, cache.soft.measured_nodes), frozen);
         }
-        assert!(matches!(cache.miss(key(5), capture_site, None, false), Miss::Eager));
+        assert!(matches!(cache.miss(key(6), capture_site, None, false), Miss::Eager));
         let victims: Vec<_> = cache.records.iter().filter(|(_, r)| r.pending_destroy).map(|(&id, _)| id).collect();
         assert_eq!(victims.len(), 1, "incoming node reservation makes room before capture");
         cache.destroyed(&victims, ReleaseMeasurement { released: 0 });
-        let Miss::Capture(reuse) = cache.miss(key(5), capture_site, None, false) else { panic!() };
+        let Miss::Capture(reuse) = cache.miss(key(6), capture_site, None, false) else { panic!() };
         cache.captured_topology(reuse, 10, 1, false);
         cache.measured_capture(0);
         assert_eq!(cache.records[&reuse].bytes, 0);
@@ -1887,7 +1962,7 @@ mod tests {
             if cache.soft.measured_bytes.is_some() { assert!(cache.soft.fits(cache.native_pools().live_nodes)); }
         }
         assert_eq!(cache.counters[&Cycle::Decode].captures, 200);
-        assert_eq!(cache.charged, 13 * unit, "equality reservation makes room before another slab is needed");
+        assert_eq!(cache.charged, 10 * unit, "double-growth margin and equality reservation makes room before another slab is needed");
         cache.charged = cache.reserve;
         assert!(matches!(cache.miss(key(200), capture_site, None, false), Miss::Eager));
     }
