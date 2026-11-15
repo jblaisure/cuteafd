@@ -831,6 +831,9 @@ pub(super) fn serve<'w, 'a, P: ServingTarget<'w, 'a>>(lib: &'a NativeLibrary, ar
         ensure!(native_coordinator_exact_cap(&manifest)? == NATIVE_COORDINATOR_EXACT_CAP,
             "native coordinator exact cap differs from validated inventory");
     }
+    first.assign_graph_lane(0)?;
+    second.assign_graph_lane(1)?;
+    if let Some(draft) = draft.as_deref_mut() { draft.assign_graph_lanes()?; }
     let _capture_session = crate::shared::decode_graph::CaptureWatch::session();
     let _stall_watch = stall::spawn();
     let mut active: Vec<Option<Active<'a>>> = (0..args.concurrency).map(|_| None).collect();

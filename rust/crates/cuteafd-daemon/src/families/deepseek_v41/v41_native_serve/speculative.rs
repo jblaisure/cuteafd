@@ -577,6 +577,18 @@ impl<'w, 'a, C: DraftChain<'a>> DraftRuntime<'w, 'a, C> {
         for chain in &mut self.chains { chain.visit_graph_banks(f)?; }
         Ok(())
     }
+    pub(crate) fn assign_graph_lanes(&mut self) -> Result<()> {
+        for lane in 0..2 {
+            let mut assign = |_: i32, _: &'static str, _: bool,
+                bank: &mut dyn crate::shared::decode_graph::CacheAttached| {
+                bank.lane_owner(lane); Ok(())
+            };
+            if let Some(main) = self.mains.get_mut(lane) { main.visit_graph_banks(&mut assign)?; }
+            if let Some(chain) = self.chains.get_mut(lane) { chain.visit_graph_banks(&mut assign)?; }
+        }
+        Ok(())
+    }
+
     fn graph_cycle(&mut self) -> Result<()> {
         crate::families::deepseek_v41::graph_policy::cycle(
             crate::shared::decode_graph::device::Cycle::Verify, |f| self.visit_graph_banks(f))

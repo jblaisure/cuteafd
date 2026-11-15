@@ -130,17 +130,21 @@ pub(crate) struct Snapshot {
     pub rankings_age_ms: u64,
     pub pending_victims: Vec<PendingVictims>,
     pub retirement: Retirement,
+    pub retirement_epochs: Vec<RetirementEpoch>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct PendingVictims { pub bank: u64, pub site: &'static str, pub count: u64, pub nodes: u64 }
 
 static RETIREMENT_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LANE_RETIREMENT_PENDING: [std::sync::atomic::AtomicUsize; 2] = [
+    std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
 
 /// Called only after a lane's commit/discard has completed. No work on the
 /// ordinary path; selected victims make both lanes yield to the full visitor.
 pub(crate) fn completed_lane_round(lane: usize) -> bool {
-    if lane >= 2 || RETIREMENT_PENDING.load(std::sync::atomic::Ordering::Acquire) == 0 { return false }
+    let Some(pending_count) = LANE_RETIREMENT_PENDING.get(lane) else { return false };
+    if pending_count.load(std::sync::atomic::Ordering::Acquire) == 0 { return false }
     let caches: Vec<_> = DEVICES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner()).values()
         .filter(|cache| {
             #[cfg(test)]
@@ -151,12 +155,22 @@ pub(crate) fn completed_lane_round(lane: usize) -> bool {
     let mut pending = false;
     for cache in caches {
         let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
-        if cache.has_pending_victims() {
+        if cache.pending_lanes[lane] > 0 {
             cache.note_retirement_round(lane);
             pending = true;
         }
     }
     pending
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct RetirementEpoch {
+    pub epoch: u64,
+    pub kind: &'static str,
+    pub lane: Option<usize>,
+    pub bank: Option<u64>,
+    pub pending: usize,
+    pub at_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -672,6 +686,10 @@ pub(crate) struct DeviceCache {
     pending_destroy: usize,
     pending_rounds: HashMap<u64, u64>,
     retirement: Retirement,
+    bank_lanes: HashMap<u64, usize>,
+    retirement_epoch: u64,
+    retirement_epochs: std::collections::VecDeque<RetirementEpoch>,
+    pending_lanes: [usize; 2],
     pending_banks: std::collections::BTreeMap<(u64, &'static str), (u64, u64)>,
     observer: GrowthObserver,
     memory_query: Option<cuteafd_ffi::PhysicalMemoryQuery>,
@@ -723,7 +741,7 @@ impl DeviceCache {
             recent_target: 0, records: HashMap::new(), identities: HashMap::new(),
             queues: std::array::from_fn(|_| Queue::default()), classes: HashMap::new(),
             pending_growth: 0, pools: Pools::default(), basis: Basis::Bytes,
-            chain_only: true, unmeasured: false, pending_destroy: 0, pending_banks: std::collections::BTreeMap::new(), pending_rounds: HashMap::new(), retirement: Retirement::default(),
+            chain_only: true, unmeasured: false, pending_destroy: 0, bank_lanes: HashMap::new(), retirement_epoch: 0, retirement_epochs: std::collections::VecDeque::new(), pending_lanes: [0, 0], pending_banks: std::collections::BTreeMap::new(), pending_rounds: HashMap::new(), retirement: Retirement::default(),
             observer: GrowthObserver::default(), memory_query: None, captured_since_observation: false,
             counters: HashMap::new(), started: Instant::now(), clock_ms: 0, last_report: Instant::now(),
             interval_evictions: 0, trace: std::env::var_os("CUTEAFD_GRAPH_TRACE").and_then(|path| {
@@ -734,6 +752,18 @@ impl DeviceCache {
     }
 
     pub fn bank(&mut self) -> u64 { self.next_bank += 1; self.next_bank }
+    pub fn assign_bank_lane(&mut self, bank: u64, lane: usize) {
+        if lane >= 2 || self.bank_lanes.get(&bank) == Some(&lane) { return }
+        let count = self.pending_banks.iter().filter(|((owner, _), _)| *owner == bank)
+            .map(|(_, (count, _))| *count as usize).sum::<usize>();
+        if let Some(old) = self.bank_lanes.insert(bank, lane) {
+            self.pending_lanes[old] -= count;
+            LANE_RETIREMENT_PENDING[old].fetch_sub(count, std::sync::atomic::Ordering::AcqRel);
+        }
+        self.pending_lanes[lane] += count;
+        LANE_RETIREMENT_PENDING[lane].fetch_add(count, std::sync::atomic::Ordering::AcqRel);
+    }
+
     pub fn reserve(&self) -> u64 { self.reserve }
     pub fn identity_generation(&self) -> u64 { self.identity_generation }
     pub fn retains_identity(&self, identity: &Identity) -> bool { self.identities.contains_key(identity) }
@@ -931,9 +961,15 @@ impl DeviceCache {
         self.pending_rounds.insert(id, 0);
         RETIREMENT_PENDING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let record = &self.records[&id];
+        if let Some(&lane) = self.bank_lanes.get(&record.identity.bank) {
+            self.pending_lanes[lane] += 1;
+            LANE_RETIREMENT_PENDING[lane].fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
         let row = self.pending_banks.entry((record.identity.bank, record.identity.site)).or_default();
         row.0 += 1;
         row.1 = row.1.saturating_add(record.stats.native_nodes.unwrap_or(0));
+        let bank = record.identity.bank;
+        self.record_retirement_epoch("selection", self.bank_lanes.get(&bank).copied(), Some(bank));
         Some(id)
     }
 
@@ -1356,10 +1392,18 @@ impl DeviceCache {
         self.apply_soft_pressure(bytes, completed);
     }
 
+    fn record_retirement_epoch(&mut self, kind: &'static str, lane: Option<usize>, bank: Option<u64>) {
+        self.retirement_epoch += 1;
+        if self.retirement_epochs.len() == 512 { self.retirement_epochs.pop_front(); }
+        self.retirement_epochs.push_back(RetirementEpoch { epoch: self.retirement_epoch, kind,
+            lane, bank, pending: self.pending_destroy, at_ms: self.started.elapsed().as_millis() as u64 });
+    }
+
     fn note_retirement_round(&mut self, lane: usize) {
         let Some(yields) = self.retirement.lane_yields.get_mut(lane) else { return };
         *yields += 1;
         for age in self.pending_rounds.values_mut() { *age = age.saturating_add(1); }
+        self.record_retirement_epoch("owner_completion", Some(lane), None);
     }
 
     fn clear_pending_bank(&mut self, id: u64) {
@@ -1367,6 +1411,10 @@ impl DeviceCache {
         let key = (record.identity.bank, record.identity.site);
         if let Some(age) = self.pending_rounds.remove(&id) {
             RETIREMENT_PENDING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            if let Some(&lane) = self.bank_lanes.get(&record.identity.bank) {
+                self.pending_lanes[lane] -= 1;
+                LANE_RETIREMENT_PENDING[lane].fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            }
             self.retirement.retired += 1;
             self.retirement.rounds_to_retire[age.min(15) as usize] += 1;
             self.retirement.max_rounds = self.retirement.max_rounds.max(age);
@@ -1433,6 +1481,7 @@ impl DeviceCache {
         }
         let ids: Vec<_> = self.records.iter().filter(|(_, r)| r.identity.bank == bank).map(|(&id, _)| id).collect();
         self.remove_drained(&ids);
+        self.bank_lanes.remove(&bank);
     }
 
     /// Forget destroyed owners, never crediting physical driver-arena release.
@@ -1486,7 +1535,7 @@ impl DeviceCache {
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(),
             basis: self.basis, sampled_at_ms: self.started.elapsed().as_millis() as u64,
             telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(),
-            top_hits: Vec::new(), top_churn: Vec::new(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows(), retirement: self.retirement.clone() },
+            top_hits: Vec::new(), top_churn: Vec::new(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows(), retirement: self.retirement.clone(), retirement_epochs: self.retirement_epochs.iter().cloned().collect() },
             records, classes: self.classes.clone() }
     }
 
@@ -1527,7 +1576,7 @@ impl DeviceCache {
             level: self.level,
             pinned: self.inventory.pinned,
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(), basis: self.basis,
-            sampled_at_ms: now, telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(), top_hits: self.ranked_hits.clone(), top_churn: self.ranked_churn.clone(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows(), retirement: self.retirement.clone() }
+            sampled_at_ms: now, telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(), top_hits: self.ranked_hits.clone(), top_churn: self.ranked_churn.clone(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows(), retirement: self.retirement.clone(), retirement_epochs: self.retirement_epochs.iter().cloned().collect() }
     }
 
     fn row(&self, record: &Record, now: u64) -> TraceRow {
@@ -1563,6 +1612,9 @@ fn raw_row(device: i32, basis: Basis, record: &RawRecord, now: u64) -> TraceRow 
 impl Drop for DeviceCache {
     fn drop(&mut self) {
         RETIREMENT_PENDING.fetch_sub(self.pending_rounds.len(), std::sync::atomic::Ordering::AcqRel);
+        for lane in 0..2 {
+            LANE_RETIREMENT_PENDING[lane].fetch_sub(self.pending_lanes[lane], std::sync::atomic::Ordering::AcqRel);
+        }
         drop(self.finish_trace());
     }
 }
@@ -1884,6 +1936,59 @@ mod tests {
     }
 
     #[test]
+    fn bank_lane_ownership_is_explicit_and_pending_remap_is_balanced() {
+        let mut cache = test_cache(-1021, 64 * GRAPH_CHUNK);
+        for bank in [1, 57, 58, 114, 115] {
+            let identity = Identity { bank, ..key(bank) };
+            let Miss::Capture(id) = cache.miss(identity, site(Preference::Capture), None, false) else { panic!() };
+            cache.captured_topology(id, 10, 1, false);
+            cache.measured_capture(10);
+        }
+        for bank in [1, 57] { cache.assign_bank_lane(bank, 0); }
+        for bank in [58, 114] { cache.assign_bank_lane(bank, 1); }
+        let mut ids = Vec::new();
+        while let Some(id) = cache.mark_victim(false) { ids.push(id); }
+        assert_eq!(cache.pending_lanes, [2, 2]);
+        assert_eq!(cache.pending_destroy, 5, "prefill bank115 has no lane owner");
+        cache.assign_bank_lane(1, 1);
+        assert_eq!(cache.pending_lanes, [1, 3]);
+        cache.assign_bank_lane(1, 1);
+        cache.assign_bank_lane(115, 99);
+        assert_eq!(cache.pending_lanes, [1, 3]);
+        cache.destroyed(&ids, ReleaseMeasurement { released: 0 });
+        assert_eq!(cache.pending_lanes, [0, 0]);
+        // Numeric ranges are not policy: a new layout can assign bank115 to0.
+        cache.assign_bank_lane(115, 0);
+        assert_eq!(cache.bank_lanes[&115], 0);
+    }
+
+    #[test]
+    fn concurrent_selection_after_empty_lane_check_keeps_its_wakeup() {
+        let cache = device_cache_sampled(-1022, 64 * GRAPH_CHUNK, Basis::Bytes,
+            || Ok((128 * GRAPH_CHUNK, 128 * GRAPH_CHUNK, 0, 0, 0))).unwrap();
+        let id = {
+            let mut c = cache.lock().unwrap();
+            c.assign_bank_lane(1, 0);
+            capture(&mut c, 1, false)
+        };
+        assert!(!completed_lane_round(0));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_cache = cache.clone();
+        let worker_barrier = barrier.clone();
+        let worker = std::thread::spawn(move || {
+            worker_barrier.wait();
+            assert_eq!(worker_cache.lock().unwrap().mark_victim(false), Some(id));
+        });
+        barrier.wait();
+        worker.join().unwrap();
+        assert!(!completed_lane_round(1), "foreign lane must not stop");
+        assert!(completed_lane_round(0), "concurrent mark remains visible to owner");
+        cache.lock().unwrap().destroyed(&[id], ReleaseMeasurement { released: 0 });
+        assert!(!completed_lane_round(0));
+        assert!(cache.lock().unwrap().retirement_epochs.iter().any(|e| e.kind == "owner_completion"));
+    }
+
+    #[test]
     fn large_capture_preserves_half_soft_capacity_and_continues_capturing() {
         let mut cache = DeviceCache::new(-1018, 4 * GRAPH_CHUNK);
         let capture_site = Site { bootstrap: 1, ..site(Preference::Capture) };
@@ -1911,21 +2016,23 @@ mod tests {
             let mut c = cache.lock().unwrap();
             let a = capture(&mut c, 1, false);
             c.captured_topology(a, 7, 1, false);
+            c.assign_bank_lane(1, 0);
             assert_eq!(c.mark_victim(false), Some(a)); a
         };
         assert!(RETIREMENT_PENDING.load(std::sync::atomic::Ordering::Acquire) > 0);
         assert!(!completed_lane_round(2));
-        for round in 0..17 { assert!(completed_lane_round(round % 2)); }
+        for _ in 0..17 { assert!(completed_lane_round(0)); }
+        assert!(!completed_lane_round(1), "peer lane has no owned victim");
         {
             let mut c = cache.lock().unwrap();
-            assert_eq!(c.retirement.lane_yields, [9, 8]);
+            assert_eq!(c.retirement.lane_yields, [17, 0]);
             c.destroyed(&[a], ReleaseMeasurement { released: 0 });
             assert_eq!(c.retirement.rounds_to_retire[15], 1);
             assert_eq!(c.retirement.max_rounds, 17);
             assert!(c.pending_victim_rows().is_empty());
         }
         assert!(!completed_lane_round(0), "retired controllers do not request another yield");
-        assert_eq!(cache.lock().unwrap().retirement.lane_yields, [9, 8]);
+        assert_eq!(cache.lock().unwrap().retirement.lane_yields, [17, 0]);
         let b = {
             let mut c = cache.lock().unwrap();
             let b = capture(&mut c, 2, false); c.mark_victim(false); b
@@ -1942,6 +2049,7 @@ mod tests {
             || Ok((128 * GRAPH_CHUNK, 128 * GRAPH_CHUNK, 0, 0, 0))).unwrap();
         let victim = {
             let mut c = cache.lock().unwrap();
+            c.assign_bank_lane(1, 0);
             capture(&mut c, 1, false)
         };
         let set = LaneSet::default();
@@ -1966,11 +2074,11 @@ mod tests {
         assert_eq!(completed.get(), 2);
         assert!(set.lease(0).stopping());
         let mut c = cache.lock().unwrap();
-        assert_eq!(c.retirement.lane_yields, [1, 1]);
+        assert_eq!(c.retirement.lane_yields, [1, 0]);
         assert!(c.pending(victim), "lane yield never destroys an owner itself");
         c.destroyed(&[victim], ReleaseMeasurement { released: 0 });
-        assert_eq!(c.retirement.max_rounds, 2);
-        assert_eq!(c.retirement.rounds_to_retire[2], 1);
+        assert_eq!(c.retirement.max_rounds, 1);
+        assert_eq!(c.retirement.rounds_to_retire[1], 1);
     }
 
     #[test]

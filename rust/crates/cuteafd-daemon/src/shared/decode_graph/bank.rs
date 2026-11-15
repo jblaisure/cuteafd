@@ -298,6 +298,12 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, E> GraphBank<K, E> {
         }
     }
 
+    pub fn cache_lane_owner(&mut self, lane: usize) {
+        if let Some(binding) = &self.device {
+            binding.cache.lock().unwrap_or_else(|p| p.into_inner()).assign_bank_lane(binding.bank, lane);
+        }
+    }
+
     pub fn cache_needs_boundary(&self) -> bool {
         self.device.as_ref().is_some_and(|binding| binding.cache.lock().unwrap_or_else(|p| p.into_inner()).needs_boundary())
     }
@@ -739,6 +745,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, E> super::CacheAttached for GraphBa
     fn needs_boundary(&self) -> bool { self.cache_needs_boundary() }
     fn measured(&mut self, bytes: u64) { self.cache_measured(bytes); }
     fn tick(&mut self) { self.cache_tick(); }
+    fn lane_owner(&mut self, lane: usize) { self.cache_lane_owner(lane); }
     unsafe fn evict_persistent(&mut self) {
         // SAFETY: forwarded persistent-storage contract from the visitor.
         unsafe { self.cache_evict_persistent(); }
