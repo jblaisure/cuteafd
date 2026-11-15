@@ -597,6 +597,9 @@ mod tests {
         use sha2::{Digest, Sha256};
         use std::sync::Arc;
         use cuteafd_loader::{plan::Checkpoint, placement::planner::PrefillShape};
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr).with_ansi(false).try_init();
+        eprintln!("native-oracle stage=before-geometry");
         cuteafd_core::set_expert_geometry(cuteafd_core::ExpertGeometry::MINIMAX_M3)
             .map_err(|previous| anyhow::anyhow!("MiniMax native proof needs an isolated process, found {previous:?}"))?;
         let snapshot = std::env::var("CUTEAFD_GOLDEN_SNAPSHOT")?;
@@ -623,6 +626,7 @@ mod tests {
         // SAFETY: the sealed native library outlives all admitted owners/streams.
         let library = Arc::new(unsafe { NativeLibrary::load(&args.native_lib)? });
         let programs = library.programs()?.with_manifest(&args.manifest)?;
+        eprintln!("native-oracle stage=before-startup");
         let loaded = super::super::startup::load(&library, &programs, &view, &checkpoint, &cfg,
             super::super::startup::Options {
                 device: args.device, split_device: args.split_device, peers: &args.peers,
@@ -637,6 +641,7 @@ mod tests {
                 usage_reader: args.expert_usage_reader.clone(),
                 resident_weights: crate::shared::memory::budget::resident_weight_limit(), draft: true,
             })?;
+        eprintln!("native-oracle stage=after-startup");
         let context = usize::try_from(loaded.admitted.solved.served_context())?;
         let backend = MiniMaxBackend::new(&loaded.owners, &cfg, loaded.execution, context,
             loaded.host_prefix, args.prefill_packing)?;
@@ -736,7 +741,9 @@ mod tests {
                     let mut prefix=Placement { units:pages.clone(),slot:0,len:0 };
                     family.bind(&mut prefix).map_err(|e| anyhow::anyhow!(e.to_string()))?;
                     backend.identities.borrow_mut().insert(0,1);
+                    eprintln!("native-oracle stage=before-prefill width={width} arm={arm}");
                     backend.prefill_device(&mut prefix,&tokens[..prompt],0,&pool)?;
+                    eprintln!("native-oracle stage=after-prefill width={width} arm={arm}");
                     let before=target_state(std::slice::from_ref(&prefix),None)?;
                     if let Some(expected)=&initial { ensure!(&before==expected,"native row proof prefill differs"); }
                     else { initial=Some(before); }
@@ -755,8 +762,10 @@ mod tests {
                             identity:(row+1) as u64,kind:ExpertV2SourceKind::Decode,start:placement.len,
                             heads:placement.len..placement.len+1,tokens:&tokens[prompt+first+row..prompt+first+row+1],placement
                         }).collect::<Vec<_>>();
+                        eprintln!("native-oracle stage=before-decode width={width} arm={arm} group={group}");
                         let logits=backend.execution.borrow_mut().decode(&backend.owners.storage,&cfg,&backend.schedule,
                             &requests,&mut backend.owners.graphs.borrow_mut(),false)?;
+                        eprintln!("native-oracle stage=after-decode width={width} arm={arm} group={group}");
                         all_logits.extend(logits.to_host(&library)?.iter().flat_map(|v| v.to_le_bytes()));
                         let owner=backend.owners.storage.ranks.last().unwrap().decode.borrow();
                         all_taps.extend(read(owner.target_taps().context("native row taps")?.output(),count*tap_pitch)?);
