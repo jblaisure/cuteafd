@@ -135,12 +135,12 @@ pub(crate) struct Snapshot {
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct PendingVictims { pub bank: u64, pub site: &'static str, pub count: u64, pub nodes: u64 }
 
-static RETIREMENT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RETIREMENT_PENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Called only after a lane's commit/discard has completed. No work on the
 /// ordinary path; selected victims make both lanes yield to the full visitor.
 pub(crate) fn completed_lane_round(lane: usize) -> bool {
-    if !RETIREMENT_PENDING.load(std::sync::atomic::Ordering::Acquire) { return false }
+    if lane >= 2 || RETIREMENT_PENDING.load(std::sync::atomic::Ordering::Acquire) == 0 { return false }
     let caches: Vec<_> = DEVICES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner()).values()
         .filter(|cache| {
             #[cfg(test)]
@@ -156,7 +156,6 @@ pub(crate) fn completed_lane_round(lane: usize) -> bool {
             pending = true;
         }
     }
-    if !pending { RETIREMENT_PENDING.store(false, std::sync::atomic::Ordering::Release); }
     pending
 }
 
@@ -325,7 +324,8 @@ pub(crate) struct SoftState {
 
 impl SoftState {
     fn new(hard: u64) -> Self {
-        Self { limit: hard.saturating_sub(GRAPH_CHUNK), margin: GRAPH_CHUNK,
+        let margin = GRAPH_CHUNK.min(hard / 2);
+        Self { limit: hard.saturating_sub(margin), margin,
             measured_bytes: None, measured_nodes: None, granule: GRAPH_CHUNK }
     }
     fn fits(&self, nodes: u64) -> bool {
@@ -651,6 +651,7 @@ pub(crate) struct DeviceCache {
     floor_resample_pending: bool,
     floor_resample_used: bool,
     soft: SoftState,
+    margin_clamp_warned: bool,
     measurement_failed: bool,
     failed_measurement_credit: u64,
     pending_bytes: u64,
@@ -717,7 +718,7 @@ pub(crate) fn seal_cross_device_capture_on_this_thread(sealed: bool) {
 impl DeviceCache {
     fn new(device: i32, reserve: u64) -> Self {
         Self { device, reserve, reserve_policy: None, charged: 0, live_bytes: 0, inventory: Inventory::default(), ranked_hits: Vec::new(), ranked_churn: Vec::new(), ranked_at: Instant::now() - Duration::from_secs(30), level: None, pending_bytes: 0, next_id: 0, next_bank: 0, identity_generation: 0, recovery_generation: 0,
-            soft: SoftState::new(reserve), measurement_failed: false, failed_measurement_credit: 0, physical_floor: 0, physical_sample: None, physical_floor_warned: false,
+            soft: SoftState::new(reserve), margin_clamp_warned: false, measurement_failed: false, failed_measurement_credit: 0, physical_floor: 0, physical_sample: None, physical_floor_warned: false,
             floor_resample_pending: false, floor_resample_used: false,
             recent_target: 0, records: HashMap::new(), identities: HashMap::new(),
             queues: std::array::from_fn(|_| Queue::default()), classes: HashMap::new(),
@@ -928,7 +929,7 @@ impl DeviceCache {
         self.records.get_mut(&id).unwrap().pending_destroy = true;
         self.pending_destroy += 1;
         self.pending_rounds.insert(id, 0);
-        RETIREMENT_PENDING.store(true, std::sync::atomic::Ordering::Release);
+        RETIREMENT_PENDING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let record = &self.records[&id];
         let row = self.pending_banks.entry((record.identity.bank, record.identity.site)).or_default();
         row.0 += 1;
@@ -1279,7 +1280,14 @@ impl DeviceCache {
         if self.charged >= self.reserve { return }
         let native = self.native_pools();
         if self.soft.measured_bytes.is_none() {
-            self.soft.margin = self.soft.margin.max(growth.saturating_mul(2).div_ceil(self.soft.granule).saturating_mul(self.soft.granule));
+            let requested = self.soft.margin.max(growth.saturating_mul(2).div_ceil(self.soft.granule).saturating_mul(self.soft.granule));
+            let maximum = self.reserve / 2;
+            if requested > maximum && !self.margin_clamp_warned {
+                tracing::warn!(device = self.device, hard = self.reserve, requested_margin = requested,
+                    clamped_margin = maximum, "graph margin clamped to preserve half the reserve as soft capacity");
+                self.margin_clamp_warned = true;
+            }
+            self.soft.margin = requested.min(maximum);
             self.soft.limit = self.reserve.saturating_sub(self.soft.margin);
             if self.charged < self.soft.limit || native.live_nodes == 0 || self.unmeasured { return }
             let pinned_nodes = self.records.values().filter(|r| r.pinned)
@@ -1349,7 +1357,8 @@ impl DeviceCache {
     }
 
     fn note_retirement_round(&mut self, lane: usize) {
-        self.retirement.lane_yields[lane] += 1;
+        let Some(yields) = self.retirement.lane_yields.get_mut(lane) else { return };
+        *yields += 1;
         for age in self.pending_rounds.values_mut() { *age = age.saturating_add(1); }
     }
 
@@ -1357,6 +1366,7 @@ impl DeviceCache {
         let Some(record) = self.records.get(&id).filter(|r| r.pending_destroy) else { return };
         let key = (record.identity.bank, record.identity.site);
         if let Some(age) = self.pending_rounds.remove(&id) {
+            RETIREMENT_PENDING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             self.retirement.retired += 1;
             self.retirement.rounds_to_retire[age.min(15) as usize] += 1;
             self.retirement.max_rounds = self.retirement.max_rounds.max(age);
@@ -1471,7 +1481,7 @@ impl DeviceCache {
     fn trace_snapshot(&self) -> TraceSnapshot {
         let records = self.records.values().map(RawRecord::copy).collect();
         TraceSnapshot { cache: Snapshot { device: self.device, reserve: self.reserve, physical_floor: self.physical_floor,
-            reserve_policy: self.reserve_policy, charged: self.charged, live_bytes: self.live_bytes, resident_estimated_bytes: self.resident_bytes(), hard_stopped: self.charged >= self.reserve || self.measurement_failed, native_pools: self.native_pools(), soft: self.soft, level: self.level,
+            reserve_policy: self.reserve_policy, charged: self.charged, live_bytes: self.live_bytes, resident_estimated_bytes: self.resident_bytes(), hard_stopped: self.charged >= self.reserve || self.measurement_failed || self.soft.limit == 0, native_pools: self.native_pools(), soft: self.soft, level: self.level,
             pinned: self.inventory.pinned,
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(),
             basis: self.basis, sampled_at_ms: self.started.elapsed().as_millis() as u64,
@@ -1513,7 +1523,7 @@ impl DeviceCache {
 
     fn snapshot(&self) -> Snapshot {
         let now = self.started.elapsed().as_millis() as u64;
-        Snapshot { device: self.device, reserve: self.reserve, physical_floor: self.physical_floor, reserve_policy: self.reserve_policy, charged: self.charged, live_bytes: self.live_bytes, resident_estimated_bytes: self.resident_bytes(), hard_stopped: self.charged >= self.reserve || self.measurement_failed, native_pools: self.native_pools(), soft: self.soft,
+        Snapshot { device: self.device, reserve: self.reserve, physical_floor: self.physical_floor, reserve_policy: self.reserve_policy, charged: self.charged, live_bytes: self.live_bytes, resident_estimated_bytes: self.resident_bytes(), hard_stopped: self.charged >= self.reserve || self.measurement_failed || self.soft.limit == 0, native_pools: self.native_pools(), soft: self.soft,
             level: self.level,
             pinned: self.inventory.pinned,
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(), basis: self.basis,
@@ -1551,7 +1561,10 @@ fn raw_row(device: i32, basis: Basis, record: &RawRecord, now: u64) -> TraceRow 
  }
 
 impl Drop for DeviceCache {
-    fn drop(&mut self) { drop(self.finish_trace()); }
+    fn drop(&mut self) {
+        RETIREMENT_PENDING.fetch_sub(self.pending_rounds.len(), std::sync::atomic::Ordering::AcqRel);
+        drop(self.finish_trace());
+    }
 }
 
 pub(crate) fn shutdown_traces() {
@@ -1823,7 +1836,8 @@ mod tests {
     #[test]
     fn zero_soft_disables_capture_and_unknown_nodes_do_not_disable_known_pressure() {
         let mut empty = DeviceCache::new(-1008, GRAPH_CHUNK);
-        assert!(matches!(empty.miss(key(1), site(Preference::Capture), None, false), Miss::Eager));
+        assert!(matches!(empty.miss(key(1), site(Preference::Capture), None, false), Miss::Capture(_)));
+        assert_eq!(empty.soft.limit, GRAPH_CHUNK / 2);
         let mut cache = test_cache(-1009, 16 * GRAPH_CHUNK);
         let capture_site = Site { bootstrap: 1, ..site(Preference::Capture) };
         let Miss::Capture(unknown) = cache.miss(key(1), capture_site, None, false) else { panic!() };
@@ -1867,6 +1881,94 @@ mod tests {
         assert_eq!(cache.charged, GRAPH_CHUNK);
         assert_eq!(cache.native_pools().live_nodes, 18);
         assert_eq!(cache.counters[&Cycle::Decode].captures, 2);
+    }
+
+    #[test]
+    fn large_capture_preserves_half_soft_capacity_and_continues_capturing() {
+        let mut cache = DeviceCache::new(-1018, 4 * GRAPH_CHUNK);
+        let capture_site = Site { bootstrap: 1, ..site(Preference::Capture) };
+        let Miss::Capture(a) = cache.miss(key(1), capture_site, None, false) else { panic!() };
+        cache.captured_topology(a, 10, 1, false);
+        cache.measured_capture(3 * GRAPH_CHUNK / 2);
+        assert_eq!(cache.soft.margin, 2 * GRAPH_CHUNK);
+        assert_eq!(cache.soft.limit, 2 * GRAPH_CHUNK);
+        assert!(cache.margin_clamp_warned);
+        assert!(!cache.snapshot().hard_stopped);
+        let Miss::Capture(b) = cache.miss(key(2), capture_site, None, false) else { panic!("below-soft reuse must remain capturable") };
+        cache.captured_topology(b, 10, 1, false);
+        cache.measured_capture(0);
+        assert_eq!(cache.charged, 3 * GRAPH_CHUNK / 2);
+        assert_eq!(cache.native_pools().live_execs, 2);
+        assert!(!cache.snapshot().hard_stopped);
+    }
+
+    #[test]
+    fn completed_round_counts_pending_victims_and_overflow_bucket_without_stale_wakeup() {
+        let cache = device_cache_sampled(-1019, 64 * GRAPH_CHUNK, Basis::Bytes,
+            || Ok((128 * GRAPH_CHUNK, 128 * GRAPH_CHUNK, 0, 0, 0))).unwrap();
+        assert!(!completed_lane_round(0));
+        let a = {
+            let mut c = cache.lock().unwrap();
+            let a = capture(&mut c, 1, false);
+            c.captured_topology(a, 7, 1, false);
+            assert_eq!(c.mark_victim(false), Some(a)); a
+        };
+        assert!(RETIREMENT_PENDING.load(std::sync::atomic::Ordering::Acquire) > 0);
+        assert!(!completed_lane_round(2));
+        for round in 0..17 { assert!(completed_lane_round(round % 2)); }
+        {
+            let mut c = cache.lock().unwrap();
+            assert_eq!(c.retirement.lane_yields, [9, 8]);
+            c.destroyed(&[a], ReleaseMeasurement { released: 0 });
+            assert_eq!(c.retirement.rounds_to_retire[15], 1);
+            assert_eq!(c.retirement.max_rounds, 17);
+            assert!(c.pending_victim_rows().is_empty());
+        }
+        assert!(!completed_lane_round(0), "retired controllers do not request another yield");
+        assert_eq!(cache.lock().unwrap().retirement.lane_yields, [9, 8]);
+        let b = {
+            let mut c = cache.lock().unwrap();
+            let b = capture(&mut c, 2, false); c.mark_victim(false); b
+        };
+        assert!(completed_lane_round(0), "a later selection cannot lose its wakeup");
+        cache.lock().unwrap().remove_drained(&[b]);
+        assert!(!completed_lane_round(1));
+    }
+
+    #[test]
+    fn pending_victim_stops_lane_set_only_after_both_started_rounds_complete() {
+        use crate::shared::serve::lanes::LaneSet;
+        let cache = device_cache_sampled(-1020, 64 * GRAPH_CHUNK, Basis::Bytes,
+            || Ok((128 * GRAPH_CHUNK, 128 * GRAPH_CHUNK, 0, 0, 0))).unwrap();
+        let victim = {
+            let mut c = cache.lock().unwrap();
+            capture(&mut c, 1, false)
+        };
+        let set = LaneSet::default();
+        let completed = std::cell::Cell::new(0);
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        runtime.block_on(set.run(|lease| async {
+            cache.lock().unwrap().mark_victim(false);
+            tokio::task::yield_now().await;
+            completed.set(completed.get() + 1);
+            if completed_lane_round(lease.index()) { lease.stop(); }
+            Ok(())
+        }, |lease| async {
+            // The peer's in-flight work must complete even if the first lane
+            // asks the set to return for the outer full-bank visitor.
+            tokio::task::yield_now().await;
+            completed.set(completed.get() + 1);
+            if completed_lane_round(lease.index()) { lease.stop(); }
+            Ok(())
+        })).unwrap();
+        assert_eq!(completed.get(), 2);
+        assert!(set.lease(0).stopping());
+        let mut c = cache.lock().unwrap();
+        assert_eq!(c.retirement.lane_yields, [1, 1]);
+        assert!(c.pending(victim), "lane yield never destroys an owner itself");
+        c.destroyed(&[victim], ReleaseMeasurement { released: 0 });
+        assert_eq!(c.retirement.max_rounds, 2);
+        assert_eq!(c.retirement.rounds_to_retire[2], 1);
     }
 
     #[test]

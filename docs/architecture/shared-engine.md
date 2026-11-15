@@ -646,10 +646,12 @@ synchronizing and calling `cudaDeviceGraphMemTrim`; same- and different-shape
 recapture reused it with zero growth (#2154). There is no drain/trim reset path.
 
 Before the first soft crossing, the margin is twice the largest measured
-single-capture growth, rounded up to 2 MiB with a one-chunk minimum; soft is
-hard minus margin. The extra capture of slack covers a graph whose actual
-growth exceeds its frozen average node cost. Margin and ratio freeze together
-and are reported in the soft snapshot.
+single-capture growth, rounded up to 2 MiB with a one-chunk minimum, then
+clamped to at most half the hard reserve. The clamp emits one warning and keeps
+soft at least half of hard even after a large slab allocation on a small reserve.
+The extra capture of slack covers a graph whose actual growth exceeds its frozen
+average node cost. Margin and ratio freeze together and are reported in the soft
+snapshot.
 At measured `charged >= soft`, known native live nodes freeze the ratio
 `charged / live_nodes` and margin for that device lifetime, including executable
 overhead. No fit, seed or per-family rate is used. Only while measured memory is
@@ -661,10 +663,16 @@ or ratio math. A measured hard stop overrides all replacement decisions.
 V4.1 independent lanes check for pending victims only after their round commit
 and discard finish; pending work stops the lane set at that boundary so the
 existing full-bank visitor retires inactive-bank victims too. The ordinary path
-reads an atomic flag, not the graph registry. Snapshots group pending counts
-and nodes by bank/site and report lane yields plus a completed-round retirement
-histogram (exact buckets 0..14, 15+ with an independent maximum). No captured
-owner is released by this lane-yield check.
+reads an atomic pending-victim count, not the graph registry. Selection and actual
+retirement update that count, so concurrent selection cannot lose a wakeup and
+same-pass retirement leaves no stale flag. Snapshots group pending counts and
+nodes by bank/site and report lane yields plus a lane-round retirement histogram
+(exact buckets 0..14, 15+ with an independent maximum). Ages count completed
+rounds across both independent lanes while a victim remains selected: active-pass
+victims retired earlier in the same pass have age 0; inactive-bank victims see
+1-2 completed lane rounds before the full visitor. Single-lane/same-pass age 0
+is not a claim that no work occurred. No captured owner is released by this
+lane-yield check.
 Native node and executable counts are reported separately from byte-estimator
 units (`native_pools`), including zero-growth reuse and pinned owners. Unknown
 metadata is counted explicitly, never treated as a zero-node executable.
