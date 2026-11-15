@@ -742,8 +742,13 @@ pub(crate) struct RoutedBinding {
     pub route: FfnRoute,
 }
 
+#[track_caller]
 fn abort_hook_error<T>(arithmetic: &impl SlotArithmetic, result: Result<T>) -> Result<T> {
-    if result.is_err() { arithmetic.abort_split(); }
+    if let Err(error) = &result {
+        tracing::error!(error = %format!("{error:#}"), caller = %std::panic::Location::caller(),
+            "MiniMax original hook error before terminal cleanup");
+        arithmetic.abort_split();
+    }
     result
 }
 
