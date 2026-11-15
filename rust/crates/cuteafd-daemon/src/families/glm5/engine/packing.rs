@@ -163,7 +163,7 @@ fn coordinator_inventory<'n>(cfg: &GlmDsaConfig, names: impl IntoIterator<Item =
         let suffix = name.strip_prefix("glm_").or_else(|| name.strip_prefix("glm2_"))
             .context("GLM packed catalogue namespace")?;
         let role = match suffix {
-            "norm" | "router_scores" | "expert_input_quant" => PackedRows,
+            "norm" | "norm_head_split" | "router_scores" | "expert_input_quant" => PackedRows,
             "dsa_candidate_merge" | "lse_combine2" | "paged_staging_gather_kv"
                 | "paged_staging_gather_index" => SequenceLocal,
             _ => {
