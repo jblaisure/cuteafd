@@ -400,6 +400,13 @@ async fn lane<'a, P: VerificationTarget<'a>, C: DraftChain<'a>>(lease: LaneLease
             operation?;
             stopped_capture?;
             discarded?;
+            // Return both drained lanes to the full-bank completed visitor.
+            // Otherwise a victim in an inactive/prefill bank can gate captures
+            // for the rest of this lane set, rather than one completed round.
+            if crate::shared::decode_graph::device::retirement_pending() {
+                lease.stop();
+                return Ok(());
+            }
             // Give already-ready remote completions an opportunity to run before
             // queuing another draft on the shared RTX.
             tokio::task::yield_now().await;

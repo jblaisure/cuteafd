@@ -128,6 +128,16 @@ pub(crate) struct Snapshot {
     pub top_hits: Vec<TraceRow>,
     pub top_churn: Vec<TraceRow>,
     pub rankings_age_ms: u64,
+    pub pending_victims: Vec<PendingVictims>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct PendingVictims { pub bank: u64, pub site: &'static str, pub count: u64, pub nodes: u64 }
+
+pub(crate) fn retirement_pending() -> bool {
+    DEVICES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner()).values()
+        .filter_map(std::sync::Weak::upgrade)
+        .any(|cache| cache.lock().unwrap_or_else(|p| p.into_inner()).has_pending_victims())
 }
 
 /// Release observations are deliberately independent of cudaMemGetInfo. An
@@ -631,6 +641,7 @@ pub(crate) struct DeviceCache {
     chain_only: bool,
     unmeasured: bool,
     pending_destroy: usize,
+    pending_banks: std::collections::BTreeMap<(u64, &'static str), (u64, u64)>,
     observer: GrowthObserver,
     memory_query: Option<cuteafd_ffi::PhysicalMemoryQuery>,
     captured_since_observation: bool,
@@ -681,7 +692,7 @@ impl DeviceCache {
             recent_target: 0, records: HashMap::new(), identities: HashMap::new(),
             queues: std::array::from_fn(|_| Queue::default()), classes: HashMap::new(),
             pending_growth: 0, pools: Pools::default(), basis: Basis::Bytes,
-            chain_only: true, unmeasured: false, pending_destroy: 0,
+            chain_only: true, unmeasured: false, pending_destroy: 0, pending_banks: std::collections::BTreeMap::new(),
             observer: GrowthObserver::default(), memory_query: None, captured_since_observation: false,
             counters: HashMap::new(), started: Instant::now(), clock_ms: 0, last_report: Instant::now(),
             interval_evictions: 0, trace: std::env::var_os("CUTEAFD_GRAPH_TRACE").and_then(|path| {
@@ -886,6 +897,10 @@ impl DeviceCache {
         self.records.get_mut(&id).unwrap().frequent = frequent;
         self.records.get_mut(&id).unwrap().pending_destroy = true;
         self.pending_destroy += 1;
+        let record = &self.records[&id];
+        let row = self.pending_banks.entry((record.identity.bank, record.identity.site)).or_default();
+        row.0 += 1;
+        row.1 = row.1.saturating_add(record.stats.native_nodes.unwrap_or(0));
         Some(id)
     }
 
@@ -1297,6 +1312,21 @@ impl DeviceCache {
         self.apply_soft_pressure(bytes, completed);
     }
 
+    fn clear_pending_bank(&mut self, id: u64) {
+        let Some(record) = self.records.get(&id).filter(|r| r.pending_destroy) else { return };
+        let key = (record.identity.bank, record.identity.site);
+        if let Some(row) = self.pending_banks.get_mut(&key) {
+            row.0 = row.0.saturating_sub(1);
+            row.1 = row.1.saturating_sub(record.stats.native_nodes.unwrap_or(0));
+            if row.0 == 0 { self.pending_banks.remove(&key); }
+        }
+    }
+
+    fn pending_victim_rows(&self) -> Vec<PendingVictims> {
+        self.pending_banks.iter().map(|(&(bank, site), &(count, nodes))|
+            PendingVictims { bank, site, count, nodes }).collect()
+    }
+
     pub fn destroyed(&mut self, ids: &[u64], measurement: ReleaseMeasurement) {
         if ids.iter().any(|id| self.records.contains_key(id)) { self.floor_resample_used = false; }
         // Observed free deltas remain available to alternate accounting adapters;
@@ -1304,6 +1334,7 @@ impl DeviceCache {
         let _ = measurement.released;
         if ids.iter().any(|id| self.records.contains_key(id)) { self.recovery_generation += 1; }
         for &id in ids {
+            self.clear_pending_bank(id);
             self.unlink(id);
             let Some(record) = self.records.get_mut(&id) else { continue };
             let evicted = record.pending_destroy;
@@ -1356,6 +1387,7 @@ impl DeviceCache {
             self.recovery_generation += 1;
         }
         for &id in ids {
+            self.clear_pending_bank(id);
             let Some(record) = self.records.get(&id) else { continue };
             if record.pending_capture {
                 self.pending_bytes = self.pending_bytes.saturating_sub(record.estimate);
@@ -1398,7 +1430,7 @@ impl DeviceCache {
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(),
             basis: self.basis, sampled_at_ms: self.started.elapsed().as_millis() as u64,
             telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(),
-            top_hits: Vec::new(), top_churn: Vec::new(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64 },
+            top_hits: Vec::new(), top_churn: Vec::new(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows() },
             records, classes: self.classes.clone() }
     }
 
@@ -1439,7 +1471,7 @@ impl DeviceCache {
             level: self.level,
             pinned: self.inventory.pinned,
             pending_capture: self.pending_bytes, cycles: self.counters.clone(), pools: self.pools.clone(), basis: self.basis,
-            sampled_at_ms: now, telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(), top_hits: self.ranked_hits.clone(), top_churn: self.ranked_churn.clone(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64 }
+            sampled_at_ms: now, telemetry_bytes: self.records.len() * std::mem::size_of::<KeyStats>(), top_hits: self.ranked_hits.clone(), top_churn: self.ranked_churn.clone(), rankings_age_ms: self.ranked_at.elapsed().as_millis() as u64, pending_victims: self.pending_victim_rows() }
     }
 
     fn row(&self, record: &Record, now: u64) -> TraceRow {
