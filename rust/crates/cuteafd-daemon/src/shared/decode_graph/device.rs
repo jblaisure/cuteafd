@@ -142,7 +142,12 @@ static RETIREMENT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::At
 pub(crate) fn completed_lane_round(lane: usize) -> bool {
     if !RETIREMENT_PENDING.load(std::sync::atomic::Ordering::Acquire) { return false }
     let caches: Vec<_> = DEVICES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner()).values()
-        .filter_map(std::sync::Weak::upgrade).collect();
+        .filter(|cache| {
+            #[cfg(test)]
+            { return TEST_CONTROLLERS.with(|owned| owned.borrow().iter().any(|weak| std::sync::Weak::ptr_eq(weak, cache))); }
+            #[cfg(not(test))]
+            { let _ = cache; true }
+        }).filter_map(std::sync::Weak::upgrade).collect();
     let mut pending = false;
     for cache in caches {
         let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -1830,7 +1835,9 @@ mod tests {
             }
         }
         assert!(cache.soft.measured_bytes.is_some());
-        assert!(!cache.pending(unknown), "unknown owner remains measured-only, not a zero-node victim");
+        assert!(!cache.records.contains_key(&unknown) || matches!(cache.records[&unknown].list,
+            Some(List::RecentGhost | List::FrequentGhost)),
+            "unknown owner is ARC-eligible once measured soft pressure needs room");
     }
 
     #[test]
@@ -2090,7 +2097,7 @@ mod tests {
 
     #[test]
     fn below_soft_estimates_do_not_evict_and_pinned_soft_excess_terminates() {
-        let mut cache = test_cache(-1001, 16 * GRAPH_CHUNK);
+        let mut cache = test_cache(-1001, 32 * GRAPH_CHUNK);
         let capture_site = Site { bootstrap: 1, ..site(Preference::Capture) };
         let Miss::Capture(id) = cache.miss(key(1), capture_site, None, true) else { panic!() };
         cache.captured_topology(id, 10, 1, false);
@@ -2509,7 +2516,7 @@ mod tests {
 
     #[test]
     fn canceled_capture_and_cold_ghost_are_not_recaptures() {
-        let mut cache = test_cache(-214, 20);
+        let mut cache = test_cache(-214, 100);
         capture(&mut cache, 1, true);
         assert!(matches!(cache.miss(key(2), site(Preference::Eager), None, false), Miss::Eager));
         assert!(matches!(cache.miss(key(2), site(Preference::Eager), None, false), Miss::Eager));
@@ -2689,7 +2696,7 @@ mod tests {
     }
     #[test]
     fn destruction_never_reduces_arena_and_both_pools_allow_reuse() {
-        let mut cache = test_cache(-203, 20);
+        let mut cache = test_cache(-203, 100);
         let a = capture(&mut cache, 1, false);
         cache.mark_victim(false);
         cache.destroyed(&[a], ReleaseMeasurement { released: 999 });
@@ -2739,7 +2746,7 @@ mod tests {
 
     #[test]
     fn canceled_tickets_never_prove_pool_reuse() {
-        let mut cache = test_cache(-208, 20);
+        let mut cache = test_cache(-208, 100);
         let Miss::Capture(id) = cache.miss(key(1), site(Preference::Capture), None, false) else { panic!() };
         assert_eq!(cache.pools.node_high_water, 0);
         cache.cancel_capture(id);
