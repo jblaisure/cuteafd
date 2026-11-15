@@ -148,7 +148,9 @@ fn run(args: GoldenArgs) -> Result<()> {
     if args.check_headers { return Ok(()); }
     cuteafd_core::set_expert_geometry(ExpertGeometry::MINIMAX_M3)
         .map_err(|_| anyhow::anyhow!("MiniMax golden needs an isolated process"))?;
-    ensure!(args.peers.len() == 4, "MiniMax golden currently qualifies four real Spark ranks");
+    let worlds = cuteafd_loader::plan::experts::spark_worlds("minimax:nvfp4a4", cfg.moe_intermediate);
+    ensure!(worlds.contains(&args.peers.len()), "MiniMax golden needs a packaged Spark world {worlds:?}, not {}",
+        args.peers.len());
     ensure!(!args.save_logits.try_exists()? && args.save_logits.parent().is_some_and(Path::is_dir),
         "MiniMax logits output needs an existing parent and a new directory");
     let host = cuteafd_loader::formats::mapped_preload::host_memory_before_process()?;
