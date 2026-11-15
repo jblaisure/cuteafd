@@ -642,6 +642,7 @@ mod tests {
                 resident_weights: crate::shared::memory::budget::resident_weight_limit(), draft: true,
             })?;
         eprintln!("native-oracle stage=after-startup");
+        library.cuda_set_device(args.device)?;
         let context = usize::try_from(loaded.admitted.solved.served_context())?;
         let backend = MiniMaxBackend::new(&loaded.owners, &cfg, loaded.execution, context,
             loaded.host_prefix, args.prefill_packing)?;
@@ -662,8 +663,9 @@ mod tests {
             backend.drain()?;
             let buffer = super::super::cache::view(buffer, 0, bytes)?;
             let mut output = vec![0; bytes];
-            library.cuda_set_device(buffer.device_id)?;
-            library.copy_d2h(&mut output, buffer)?;
+            let previous = library.cuda_get_device()?;
+            Device { library: &library, id: buffer.device_id }.run(|| library.copy_d2h(&mut output, buffer))?;
+            ensure!(library.cuda_get_device()? == previous, "oracle readback leaked current device");
             Ok(output)
         };
         let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
@@ -741,6 +743,9 @@ mod tests {
                     let mut prefix=Placement { units:pages.clone(),slot:0,len:0 };
                     family.bind(&mut prefix).map_err(|e| anyhow::anyhow!(e.to_string()))?;
                     backend.identities.borrow_mut().insert(0,1);
+                    if std::env::var("CUTEAFD_MINIMAX_PROOF_AMBIENT_PEER").as_deref() == Ok("on") {
+                        library.cuda_set_device(args.split_device.context("ambient-peer proof requires two GPUs")?)?;
+                    }
                     eprintln!("native-oracle stage=before-prefill width={width} arm={arm}");
                     backend.prefill_device(&mut prefix,&tokens[..prompt],0,&pool)?;
                     eprintln!("native-oracle stage=after-prefill width={width} arm={arm}");
