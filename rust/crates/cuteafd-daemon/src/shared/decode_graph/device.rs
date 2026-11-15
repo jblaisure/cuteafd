@@ -1947,17 +1947,19 @@ mod tests {
         let set = LaneSet::default();
         let completed = std::cell::Cell::new(0);
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        runtime.block_on(set.run(|lease| async {
-            cache.lock().unwrap().mark_victim(false);
+        let cache_ref = &cache;
+        let completed_ref = &completed;
+        runtime.block_on(set.run(|lease| async move {
+            cache_ref.lock().unwrap().mark_victim(false);
             tokio::task::yield_now().await;
-            completed.set(completed.get() + 1);
+            completed_ref.set(completed_ref.get() + 1);
             if completed_lane_round(lease.index()) { lease.stop(); }
             Ok(())
-        }, |lease| async {
+        }, |lease| async move {
             // The peer's in-flight work must complete even if the first lane
             // asks the set to return for the outer full-bank visitor.
             tokio::task::yield_now().await;
-            completed.set(completed.get() + 1);
+            completed_ref.set(completed_ref.get() + 1);
             if completed_lane_round(lease.index()) { lease.stop(); }
             Ok(())
         })).unwrap();
