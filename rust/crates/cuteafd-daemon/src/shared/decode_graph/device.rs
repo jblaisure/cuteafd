@@ -1292,6 +1292,10 @@ impl DeviceCache {
                 > u128::from(self.soft.limit) * u128::from(native.live_nodes) { return }
             self.soft.measured_bytes = Some(self.charged);
             self.soft.measured_nodes = Some(native.live_nodes);
+            tracing::info!(device = self.device, charged = self.charged, level = ?self.level,
+                hard = self.reserve, soft = self.soft.limit, margin = self.soft.margin,
+                native_nodes = native.live_nodes, native_execs = native.live_execs,
+                "graph soft capacity frozen from measured device memory");
         }
         if self.charged < self.soft.limit { return }
         self.make_soft_room(0, completed);
@@ -1825,19 +1829,23 @@ mod tests {
         let Miss::Capture(unknown) = cache.miss(key(1), capture_site, None, false) else { panic!() };
         cache.captured_topology(unknown, 0, 0, false);
         cache.measured_capture(GRAPH_CHUNK);
-        for n in 2..16 {
-            if cache.charged >= cache.reserve { break }
-            if let Miss::Capture(id) = cache.miss(key(n), capture_site, None, false) {
-                cache.captured_topology(id, 10, 1, false);
-                cache.measured_capture(GRAPH_CHUNK);
-                let victims: Vec<_> = cache.records.iter().filter(|(_, r)| r.pending_destroy).map(|(&id, _)| id).collect();
-                cache.destroyed(&victims, ReleaseMeasurement { released: 0 });
-            }
+        for n in 2..14 {
+            let Miss::Capture(id) = cache.miss(key(n), capture_site, None, false) else { panic!() };
+            cache.captured_topology(id, 10, 1, false);
+            cache.measured_capture(GRAPH_CHUNK);
         }
+        let Miss::Capture(crossing) = cache.miss(key(14), capture_site, None, false) else { panic!() };
+        cache.captured_topology(crossing, 10, 1, false);
+        cache.measured_capture(GRAPH_CHUNK);
         assert!(cache.soft.measured_bytes.is_some());
-        assert!(!cache.records.contains_key(&unknown) || matches!(cache.records[&unknown].list,
-            Some(List::RecentGhost | List::FrequentGhost)),
-            "unknown owner is ARC-eligible once measured soft pressure needs room");
+        // Equality itself fits. Reserving one more known graph must select the
+        // oldest unknown owner too, rather than granting it eviction immunity.
+        assert!(matches!(cache.miss(key(15), capture_site, None, false), Miss::Eager));
+        assert!(cache.pending(unknown));
+        let victims: Vec<_> = cache.records.iter().filter(|(_, r)| r.pending_destroy).map(|(&id, _)| id).collect();
+        assert_eq!(victims.len(), 2, "unknown owner plus one known node owner release one graph's capacity");
+        cache.destroyed(&victims, ReleaseMeasurement { released: 0 });
+        assert_eq!(cache.records[&unknown].list, Some(List::RecentGhost));
     }
 
     #[test]
