@@ -3067,6 +3067,7 @@ impl NativeLibrary {
 
     /// # Safety
     /// The stream is in capture mode and all captured storage remains live.
+    #[track_caller]
     pub unsafe fn cuda_graph_end_capture_topology(&self, stream: *mut c_void)
         -> Result<(*mut c_void, usize, usize, bool, Option<String>)> {
         let _failure_boundary = memory_ledger::fault::boundary();
@@ -3080,6 +3081,10 @@ impl NativeLibrary {
             return Err(SmallGraphCapture { nodes }.into());
         }
         self.status_to_result("cuteafd_cuda_graph_end_capture_topology", status)?;
+        if std::env::var_os("CUTEAFD_GRAPH_CENSUS").is_some_and(|value| value == "1") {
+            tracing::info!(target: "cuteafd::graph_capture", exec = ?exec,
+                site = %std::panic::Location::caller(), "graph census topology source");
+        }
         let inspection_error = (width == 0).then(|| self.last_error().unwrap_or_default());
         if coordinator_gpu_budget().is_some() {
             if let Err(error) = self.cuda_memory_info() {

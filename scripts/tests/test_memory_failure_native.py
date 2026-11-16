@@ -391,6 +391,7 @@ int main() {
   result = probe.capture(true, graph, second, topology, 0, 2);
   assert(result.donor_id == 1 && result.update_result == 0 && updates == 1 && destroyed == 1);
   assert(result.clone_bytes == 0 && result.scratch_peak_bytes == 0);
+  assert(result.update_memory_status == 0 && result.update_bytes == 0);
   assert(probe.retire(first) == 0 && probe.retire(first) == 0 && graph_destroyed == 1);
   update_error = 910;
   result = probe.capture(true, graph, first, topology, 0, 3);
@@ -426,3 +427,17 @@ int main() {
     assert built.returncode == 0, built.stderr
     ran = subprocess.run([str(binary)], capture_output=True, text=True)
     assert ran.returncode == 0, ran.stderr
+
+
+def test_topology_source_log_has_no_callsite_work_without_census():
+    ffi = (ROOT / 'rust/crates/cuteafd-ffi/src/lib.rs').read_text()
+    method = ffi.split('    pub unsafe fn cuda_graph_end_capture_topology', 1)[1].split(
+        '    pub unsafe fn cuda_graph_launch', 1)[0]
+    assert '#[track_caller]\n    pub unsafe fn cuda_graph_end_capture_topology' in ffi
+    gated = method.split('if std::env::var_os("CUTEAFD_GRAPH_CENSUS")', 1)[1].split(
+        '        let inspection_error', 1)[0]
+    assert gated.startswith('.is_some_and(|value| value == "1") {')
+    assert gated.count('tracing::info!') == 1
+    assert gated.count('std::panic::Location::caller()') == 1
+    assert method.count('std::panic::Location::caller()') == 1
+    assert method.count('tracing::') == 1

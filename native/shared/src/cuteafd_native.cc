@@ -764,13 +764,15 @@ void record_graph_census(cudaGraph_t graph, cudaGraphExec_t exec,
       "\"update_result\":%d,\"update_us\":%.3f,\"update_error_node\":\"%p\","
       "\"update_error_from_node\":\"%p\",\"scratch_destroy_status\":%d,"
       "\"clone_status\":%d,\"diagnostic_memory_status\":%d,\"clone_bytes\":%lld,"
-      "\"scratch_peak_bytes\":%lld,\"scratch_retained_bytes\":%lld",
+      "\"scratch_peak_bytes\":%lld,\"scratch_retained_bytes\":%lld,"
+      "\"update_memory_status\":%d,\"update_bytes\":%lld",
       static_cast<unsigned long long>(topology.hash), static_cast<int>(topology.status), instantiate_us,
       static_cast<unsigned long long>(update.donor_id), update.donor_status, update.update_status,
       update.update_result, update.update_us, update.error_node, update.error_from_node,
       update.scratch_destroy_status, update.clone_status, update.memory_status,
       static_cast<long long>(update.clone_bytes), static_cast<long long>(update.scratch_peak_bytes),
-      static_cast<long long>(update.scratch_retained_bytes));
+      static_cast<long long>(update.scratch_retained_bytes), update.update_memory_status,
+      static_cast<long long>(update.update_bytes));
   int runtime_version = 0;
   cuteafd::diagnostic_cuda(cudaRuntimeGetVersion(&runtime_version));
   if (captures == nullptr) {

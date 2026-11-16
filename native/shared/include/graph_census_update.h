@@ -73,6 +73,8 @@ struct CensusUpdateMeasurement {
   int64_t clone_bytes = 0;
   int64_t scratch_peak_bytes = 0;
   int64_t scratch_retained_bytes = 0;
+  int update_memory_status = cudaErrorNotSupported;
+  int64_t update_bytes = 0;
 };
 
 class CensusUpdateProbe {
@@ -98,12 +100,18 @@ class CensusUpdateProbe {
       out.donor_status = diagnostic_cuda(cudaGraphInstantiate(&scratch, source.graph, 0));
       if (out.donor_status == cudaSuccess && scratch) {
         const auto peak_status = diagnostic_cuda(cudaMemGetInfo(&peak, &total));
+        // The sample precedes the timer; no memory query enters update_us.
+        size_t update_after = 0;
         cudaGraphExecUpdateResultInfo result{};
         const auto start = std::chrono::steady_clock::now();
         const auto status = cudaGraphExecUpdate(scratch, graph, &result);
         const auto stop = std::chrono::steady_clock::now();
         out.update_us = std::chrono::duration<double, std::micro>(stop - start).count();
         out.update_status = diagnostic_cuda(status);
+        const auto update_after_status = diagnostic_cuda(cudaMemGetInfo(&update_after, &total));
+        out.update_memory_status = peak_status != cudaSuccess ? peak_status : update_after_status;
+        if (out.update_memory_status == cudaSuccess)
+          out.update_bytes = static_cast<int64_t>(peak) - static_cast<int64_t>(update_after);
         out.update_result = static_cast<int>(result.result);
         out.error_node = reinterpret_cast<void*>(result.errorNode);
         out.error_from_node = reinterpret_cast<void*>(result.errorFromNode);
