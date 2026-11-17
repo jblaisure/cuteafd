@@ -227,11 +227,6 @@ fn native_layout(cfg: &crate::families::qwen3_5::Qwen35Config, input: &crate::pl
         peer.locations = vec![Location::coordinator(1)];
         budgets.insert(1, peer);
     }
-    for budget in &mut budgets {
-        if budget.locations.iter().any(|location| matches!(location.device, crate::placement::planner::Device::Coordinator(_))) {
-            budget.physical_bytes = crate::placement::CoordinatorCard::planned(budget.logical_bytes, options.physical_sms).physical_bytes;
-        }
-    }
     let operation = Operation::Serving;
     let onboard = match options.onboard.unwrap_or_default().resolve(0) {
         Onboard::Auto => Pin::Auto,

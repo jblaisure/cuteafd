@@ -322,8 +322,7 @@ pub fn prepare(inputs: &V4Inputs) -> Result<PreparedV4<'_>, Refusal> {
     } else {
         V4_PAGE_ROWS
     };
-    let cards = inputs.gpus.iter().enumerate().map(|(rank, &(bytes, _))|
-        inputs.physical_bytes.get(rank).copied().unwrap_or(bytes)).collect::<Vec<_>>();
+    let cards = inputs.gpus.iter().map(|&(bytes, _)| bytes).collect::<Vec<_>>();
     let mut facts = crate::placement::PoolFacts::new(&cards, inputs.serving_context,
         inputs.requested_pool, page_rows);
     facts.encoding_limit = Some(super::POOL_CEILING_TOKENS);

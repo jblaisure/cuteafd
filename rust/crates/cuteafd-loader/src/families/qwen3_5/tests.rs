@@ -656,7 +656,6 @@ fn public_plan_and_runtime_share_resolved_pool_with_optional_target_and_growth()
                 MemoryPolicy { kv_max: maximum, ..Default::default() }.scoped(|| {
                     let layout = options.layout.as_mut().unwrap();
                     layout.rtx_bytes = vec![capacity];
-                    layout.physical_sms = Some(if capacity <= 32 << 30 {170} else {188});
                     layout.pool_tokens = None;
                     layout.target_pool_tokens = target;
                     let report = plan::plan(dir.path(), &options).unwrap();

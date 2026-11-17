@@ -84,7 +84,7 @@ fn plan_options(case: &Case<'_>, host: bool) -> PlanOptions {
     PlanOptions { placement: ExpertPlacement::from_spark_ranks(case.sparks),
         layout: Some(LayoutOptions { host_memory: Some(cuteafd_loader::plan::testing::SimulatedHost::raptor().host_ram), rtx_bytes: (0..case.rtx).map(|g| if g == 1 { case.peer_budget.unwrap_or(case.budget) } else { case.budget }).collect(), context_tokens: case.context,
             // Retained measured fixtures and the direct EngineArgs default are C8.
-            concurrency: 8, expert_usage: true, physical_sms: Some(case.physical_sms.unwrap_or_else(|| cuteafd_loader::placement::ArchContext::for_device("sm_120", case.budget).sms)), host_cache_bytes: if host { None } else { Some(0) }, workspace_manifest: Some(case.manifest.to_path_buf()), onboard: case.onboard, exchange_f32: case.exchange_f32,
+            concurrency: 8, expert_usage: true, physical_sms: case.physical_sms, host_cache_bytes: if host { None } else { Some(0) }, workspace_manifest: Some(case.manifest.to_path_buf()), onboard: case.onboard, exchange_f32: case.exchange_f32,
             native_mtp_layers: if case.dspark { 3 } else { 0 }, tp2_dspark_experts: case.tp2_draft, ..Default::default() }),
         attention_placement: case.attention, ..Default::default() }
 }
@@ -138,7 +138,6 @@ fn runtime_with_host(shared: &Shared, case: &Case<'_>, layout: &MemoryLayout, tp
     if host { argv.extend(["--host-cache-bytes".into(), "auto".into()]); }
     if let Some(attention) = case.attention { argv.extend(["--attention-placement".into(), attention.to_string()]); }
     let mut cli = Cli::try_parse_from(argv)?;
-    cli.engine.max_context = case.context as usize;
     crate::commands::bench::assert_resolved_family_seam("deepseek_v4", &["attention-plan-rows"], || {
     cli.prefix.resolve_entries(cli.engine.max_sequences);
     // The selected model owns caches only for its retained dSpark stages.
@@ -940,7 +939,6 @@ fn runtime_measured(shared: &Shared, case: &Case<'_>, fixture: &Fixture) -> anyh
     if let Some(onboard) = case.onboard { argv.extend(["--rtx-expert-layers".into(), onboard.to_string()]); }
     if case.rtx == 2 { argv.extend(["--split-device".into(), "1".into()]); }
     let mut cli = Cli::try_parse_from(argv)?;
-    cli.engine.max_context = case.context as usize;
     cli.prefix.resolve_entries(cli.engine.max_sequences);
     let stages = (0..).take_while(|stage| catalog.tensors().iter()
         .any(|t| t.metadata.name.starts_with(&format!("mtp.{stage}.")))).count();
