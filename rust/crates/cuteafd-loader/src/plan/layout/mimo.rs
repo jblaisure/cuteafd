@@ -547,10 +547,12 @@ fn apply_selected(input: &super::super::PlanInput, options: &LayoutOptions,
     let (experts, expert_workspace, tp2_workspace, onboard) = expert_costs(input, &cfg, options, ranks, spark_ranks, rows)?;
     let lanes = if options.prefill_lanes > 0 { options.prefill_lanes } else { prefill_shape(spark_ranks, None)?.waves } as usize;
     let kv = MimoKvFormats { full: options.mimo_full_kv, sliding: options.mimo_swa_kv };
-    let pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
+    let mut facts = crate::placement::PoolFacts::new(
         &options.rtx_bytes[..ranks], crate::placement::planner::Context::resolve(context,
             (options.context_tokens > 0).then_some(options.context_tokens)),
-        options.pool_tokens, profiles.steady.pool_unit_rows));
+        options.pool_tokens, profiles.steady.pool_unit_rows);
+    facts.target = options.target_pool_tokens;
+    let pool = crate::placement::prepare_pool(facts);
     let prefill = PrefillShape { rows, waves: lanes as u64 };
     let operation = Operation::Serving;
     let embedding = if use_host_embedding(checkpoint, options) { EmbeddingHome::HostPinned }
@@ -972,9 +974,10 @@ mod tests {
             let reserve = crate::placement::families::mimo_v2::admission::device_headroom();
             assert_eq!(reserve, cuteafd_core::memory_policy::MemoryPolicy::current().release_padding());
             profile.steady.devices[0].reserve_bytes = reserve;
-            let policy = CapacityPolicy { concurrency: 4,
-                target_pool_tokens: if total <= 32 * GIB { 1 << 20 } else { 2 << 20 },
-                max_context_tokens: Some(1 << 20), ..Default::default() };
+            let pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
+                &[total], 1 << 20, None, profile.steady.pool_unit_rows));
+            let mut policy = pool.capacity_policy(4);
+            policy.pool_tokens = None;
             let admitted = resolve_capacity_with_startup_peaks(policy, &profile.steady,
                 &[DeviceMemory { device: 0, total_bytes: total, baseline_free_bytes: total - baseline }],
                 &[]).unwrap();
