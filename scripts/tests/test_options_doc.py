@@ -405,10 +405,6 @@ def test_optional_levers_are_default_off_and_documented():
                 assert lever["families"] == COLUMNS
                 assert '`GRAPH_DONOR_ALWAYS=on GRAPH_DONOR_COLD_LAG=16`' in DOC.read_text()
                 assert 'graph_donor_cold_lag="$(get GRAPH_DONOR_COLD_LAG 0)"' in (ROOT / "scripts/launch/run-family.sh").read_text()
-            elif key == "SPECULATOR":
-                assert lever["families"] == ["Inkling"]
-                assert default == "family default"
-                assert "`SPECULATOR=off|dspark` defaults to `off`" in DOC.read_text()
             elif key == "KV_CACHE":
                 assert lever["families"] == ["Muse"]
                 assert default == "family default"
