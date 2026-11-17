@@ -172,6 +172,8 @@ pub fn context_buffers(cfg: &GlmNextConfig, extent: u64, rows: u64, lanes: u64,
 #[derive(Debug, Clone)]
 pub struct GlmfInputs<'a> {
     pub target_pool_tokens: Option<u64>,
+    /// Physical card identities, independent of the logical budgets in `gpus`.
+    pub physical_card_bytes: Vec<u64>,
     pub resident_weight_limit: Option<ResidentWeights>,
     pub spark_reply_format: cuteafd_core::SparkReplyFormat,
     /// Shared model extent and optional operator context pin.
@@ -390,6 +392,7 @@ pub fn facts(i: &GlmfInputs<'_>) -> Result<GlmfFacts, PlacementError> {
     let ranks = i.gpus.len();
     if !(1..=2).contains(&ranks) || i.layers == 0 || i.layers > i.cfg.layers
         || i.cfg.dense.len() < i.layers || i.cfg.attention.len() < i.layers
+        || i.physical_card_bytes.len() != ranks || i.physical_card_bytes.iter().any(|&bytes| bytes == 0)
         || i.resident.len() != ranks
         || i.pending_code.len() != ranks || i.drafter_scratch.len() != ranks
         || ![2, 4].contains(&i.partial_bytes) || i.attention.first_owner as usize >= ranks {
@@ -623,7 +626,7 @@ pub(crate) mod tests {
 
     pub(crate) fn inputs(cfg: &GlmNextConfig, ranks: usize, capacity: u64) -> GlmfInputs<'_> {
         let context = ArchContext::coordinator(capacity, None).context_bytes;
-        GlmfInputs { target_pool_tokens: None, resident_weight_limit: None, spark_reply_format: cuteafd_core::SparkReplyFormat::Bf16, context: crate::placement::planner::Context::pinned(262_144),
+        GlmfInputs { physical_card_bytes: vec![capacity; ranks], target_pool_tokens: None, resident_weight_limit: None, spark_reply_format: cuteafd_core::SparkReplyFormat::Bf16, context: crate::placement::planner::Context::pinned(262_144),
             attention: Default::default(), cfg, layers: cfg.layers,
             gpus: (0..ranks).map(|rank| (capacity, Baseline::Planned {
                 context_bytes: context + inventory::loaded_code_allowance("glmf", "exl3", ranks == 2,
@@ -675,6 +678,12 @@ pub(crate) mod tests {
             .with_spark_capacities(crate::serving_capacity::spark_memory::serving_bytes());
         let prepared = admission::prepare(&input, 170, true, process()).unwrap();
         assert_eq!(prepared.pool.target(), 1 << 20);
+        input.physical_card_bytes = vec![inventory::PRO_TOTAL_BYTES];
+        assert_eq!(admission::prepare(&input, 188, true, process()).unwrap().pool.target(), 2 << 20,
+            "a logical 32GiB cap does not turn a PRO into a 5090");
+        let sampled = sampled(&input);
+        assert_eq!(admission::prepare(&sampled, 188, true, process()).unwrap().pool,
+            admission::prepare(&input, 188, true, process()).unwrap().pool);
         input.target_pool_tokens = Some(3 << 20);
         assert_eq!(admission::prepare(&input, 170, true, process()).unwrap().pool.target(), 3 << 20);
     }

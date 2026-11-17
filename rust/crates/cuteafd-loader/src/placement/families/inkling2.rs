@@ -135,7 +135,7 @@ pub struct InklingInputs {
     pub gpus: usize,
     pub spark_ranks: usize,
     pub context: Context,
-    /// Largest pool the build indexes (KV max), in tokens.
+    /// The resolved pool policy used for both curve preparation and admission.
     pub pool: crate::placement::PoolPolicy,
     pub prefill: PrefillShape,
     /// Boot concurrency C: per-sequence rings, conv lags, page tables, selector.

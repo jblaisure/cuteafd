@@ -883,9 +883,9 @@ fn shared_recipe_supports_layouts_and_measured_baselines_without_replanning() {
         let inputs = recipe_inputs(gpus, ranks);
         let request = shared::request(inputs.context, Some(32768), Onboard::Layers(0), inputs.prefill,
             Operation::Serving, None, Default::default());
-            let mut inputs = inputs.clone();
-            inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-                &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+        let mut inputs = inputs.clone();
+        inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
+            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
         let planned = inputs.admit(request.clone()).unwrap();
         assert_eq!(planned.placement.pool_tokens, 32768);
         assert!(planned.placement.layers.iter().filter(|l| l.experts != ExpertHome::Dense)
@@ -1716,12 +1716,12 @@ fn heads_recipe_matches_native_cache_units_peer_slots_and_one_tail_per_backing()
     for concurrency in [1, 16, 64] {
         let mut inputs = heads_recipe_inputs();
         inputs.sequences = concurrency;
-        let maximum = inputs.maximum_pages();
         let request = shared::request(inputs.context, Some(1 << 20), crate::placement::Onboard::Auto,
             inputs.prefill, Operation::Serving, None, Default::default());
         let mut inputs = inputs.clone();
         inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
             &vec![96 << 30; inputs.gpus], inputs.context, Some(1 << 20), shared::PAGE_ROWS));
+        let maximum = inputs.maximum_pages();
         let contract = inputs.prepare(&request).unwrap();
         assert!(!contract.components.iter().any(|component| matches!(&component.kind,
             ComponentKind::Allocation { template, .. } if template.group == "residual hop control")));
@@ -2001,7 +2001,7 @@ fn heads_gather_uses_sliced_targets_mount_sources_and_replicated_host_prefix_pag
     }
     let runtime = measured.admit_serving(solve).unwrap();
     assert_eq!(planned.solved.pool_policy, runtime.solved.pool_policy);
-        assert_eq!(planned.solved.pool_tokens, runtime.solved.pool_tokens);
+    assert_eq!(planned.solved.pool_tokens, runtime.solved.pool_tokens);
     assert_eq!(planned.solved.decisions, runtime.solved.decisions);
     assert_eq!(planned.solved.facts, runtime.solved.facts);
     assert_eq!(planned.placement, runtime.placement);

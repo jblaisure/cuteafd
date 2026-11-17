@@ -684,8 +684,7 @@ fn prepare_fixed<'a>(i: &'a GlmfInputs<'a>, sms: usize, rtx_experts: bool, proce
             return Err(invalid("GLM Flash step inventory"));
         }
     }
-    let capacities = i.gpus.iter().map(|g| g.0).collect::<Vec<_>>();
-    let mut pool_facts = crate::placement::PoolFacts::new(&capacities, i.context, i.requested_pool, 256);
+    let mut pool_facts = crate::placement::PoolFacts::new(&i.physical_card_bytes, i.context, i.requested_pool, 256);
     pool_facts.target = i.target_pool_tokens;
     let pool = crate::placement::prepare_pool(pool_facts);
     let maximum = pool.maximum_tokens().div_ceil(256);

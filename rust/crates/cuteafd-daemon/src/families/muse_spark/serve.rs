@@ -210,7 +210,7 @@ pub(super) fn with_backend<T>(args: &ServeArgs, run: impl FnOnce(&super::backend
         prefix_entries: args.prefix.prefix_cache_entries as u64, media_bytes: args.media_cache_bytes,
         device_sampling: args.token_io.token_select == crate::shared::token_io::SelectPlacement::Device }, cfg: &cfg, core: &core, catalog: &catalog,
         manifest: &manifest, projections,
-        measured: inventory.gpus.iter().map(|sample| startup::Measured { total_bytes: sample.total_bytes,
+        measured: inventory.gpus.iter().map(|sample| startup::Measured { physical_bytes: sample.physical_bytes, total_bytes: sample.total_bytes,
             free_bytes: sample.free_bytes, untracked_bytes: sample.context_bytes }).collect(),
         headroom_bytes: cuteafd_loader::placement::reserve::gpu("muse_spark"), spark_ranks: args.peers.len(), prefill: args.prefill()?,
          slots: u64::from(args.max_sequences),
