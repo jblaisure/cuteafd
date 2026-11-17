@@ -461,6 +461,35 @@ mod default_tests {
         prepared.admit(request).map(|admitted| admitted.placement)
     }
 
+    #[test]
+    fn prepared_pool_matches_plan_and_runtime_and_preserves_strict_requests() {
+        use cuteafd_core::memory_policy::MemoryPolicy;
+        let cfg = context_cfg();
+        let mut input = plan_inputs(&cfg);
+        input.requested_pool = None;
+        input.attention = Some(AttentionPlacement::Heads);
+        let default = prepare(&input).unwrap().admit(production_request(&input)).unwrap();
+        assert_eq!(default.solved.pool_tokens, 2 << 20);
+        MemoryPolicy { kv_max: Some(100_000_000), ..Default::default() }.scoped(|| {
+            let prepared = prepare(&input).unwrap();
+            let grown = MemoryPolicy::default().scoped(|| prepared.admit(production_request(&input))).unwrap();
+            let mut live = input.clone();
+            for (_, baseline) in &mut live.gpus {
+                *baseline = Baseline::Measured { free_bytes: 96 << 30 };
+            }
+            let served = prepare(&live).unwrap().admit(production_request(&live)).unwrap();
+            assert_eq!(grown.solved.pool_policy, served.solved.pool_policy);
+            assert_eq!(grown.solved.pool_policy.unwrap().ceiling(), POOL_CEILING_TOKENS);
+            assert_eq!(grown.solved.pool_tokens, served.solved.pool_tokens);
+            assert_eq!(grown.solved.decisions, served.solved.decisions);
+            assert!(grown.solved.pool_tokens > default.solved.pool_tokens);
+            assert_eq!(grown.solved.decisions.onboard_layers, default.solved.decisions.onboard_layers);
+            input.requested_pool = Some(262_144);
+            let strict = prepare(&input).unwrap().admit(production_request(&input)).unwrap();
+            assert_eq!(strict.solved.pool_tokens, 262_144);
+        });
+    }
+
     /// The graph arena is exactly one canonical `graph reserve` owner per
     /// coordinator GPU. `/v1/stats` reconciliation sums only owners named
     /// exactly that (shared/memory_report/reconcile.rs), so a family-named row

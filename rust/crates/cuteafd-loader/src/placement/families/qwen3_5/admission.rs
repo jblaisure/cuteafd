@@ -107,11 +107,19 @@ pub fn admit(request: Request, mut budgets: Vec<Budget>, facts: DenseFacts<'_>)
         return Err(Refusal::InvalidFact(
             "dense geometry or operation differs from allocation recipe".into()));
     }
+    let cards = budgets.iter().filter(|budget| budget.locations.iter()
+        .any(|location| matches!(location.device, Device::Coordinator(_))))
+        .map(|budget| budget.physical_bytes).collect::<Vec<_>>();
+    let requested = match request.pool { Pin::Auto => None, Pin::Exact(tokens) => Some(tokens) };
+    let mut pool_facts = crate::placement::PoolFacts::new(&cards, request.context, requested, PAGE_ROWS);
+    pool_facts.encoding_limit = Some(if facts.drafter.is_some() { i32::MAX as u64 } else { u32::MAX as u64 });
+    let pool = crate::placement::prepare_pool(pool_facts);
     let contract = facts.prepare(&request)?;
-    admit_contract(request, std::mem::take(&mut budgets), contract)
+    admit_contract(request, std::mem::take(&mut budgets), contract, &pool)
 }
 
-pub(super) fn admit_contract(request: Request, mut budgets: Vec<Budget>, mut contract: Contract)
+pub(super) fn admit_contract(request: Request, mut budgets: Vec<Budget>, mut contract: Contract,
+    pool: &crate::placement::PoolPolicy)
     -> Result<ResolvedPlan, Refusal> {
     for budget in &mut budgets {
         let [location] = budget.locations.as_slice() else { continue; };
@@ -133,7 +141,7 @@ pub(super) fn admit_contract(request: Request, mut budgets: Vec<Budget>, mut con
         budget.baseline = Baseline::Forecast { occupied: 0, assumed: false,
             source: "physical capacity; pre-weight occupancy charged once in recipe".into() };
     }
-    solve(request, budgets, &PreparedDense(contract))
+    solve_prepared(request, budgets, &PreparedDense(contract), pool)
 }
 
 struct PreparedDense(Contract);
