@@ -87,6 +87,16 @@ def test_inkling_bundled_drafter_defaults_on_and_honors_off(tmp_path: Path, sett
     assert _flag(plan, "--speculator") == ("dspark" if enabled else "off")
 
 
+@pytest.mark.parametrize("policy", ["simple", "simple-derived"])
+def test_inkling_accepts_shared_draft_policy_override(tmp_path: Path, policy: str) -> None:
+    config = {"model_type": "inkling2", "text_config": {"num_hidden_layers": 48}}
+    keys = f"SPARK_COUNT=6\nRTX_GPUS=1\nSPECULATOR=dspark\nDRAFT_POLICY={policy}\nVISION=off\nAUDIO=off\n" + SIX
+    result = _family_launch_result(tmp_path, config, "thinkingmachines/Inkling-2-Small-MXFP8", keys,
+        physical_gpus=(0,), extra_args=("--wip", "inkling"), encoder_plan=PLANNED)
+    serve = _line(result, "serve-inkling2 --snapshot")
+    assert f"CUTEAFD_DRAFT_POLICY={policy}" in serve
+
+
 @pytest.mark.parametrize("cache", ["fp8", "bf16"])
 def test_inkling_bundled_drafter_matches_plan_and_serve(tmp_path: Path, cache: str) -> None:
     config = {"model_type": "inkling2", "text_config": {"num_hidden_layers": 48}}
