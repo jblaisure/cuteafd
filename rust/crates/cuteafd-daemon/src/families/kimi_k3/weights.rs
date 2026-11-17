@@ -22,7 +22,8 @@ pub(crate) fn read_tensor(checkpoint: &cuteafd_loader::plan::Checkpoint, name: &
 }
 
 /// Global tensors follow the shared entry/head ranks: one embedding on rank 0,
-/// one untied full vocabulary head and output mix/norm on rank 1.
+/// one untied full vocabulary head on rank 1. Both ranks retain output scoring
+/// operands so rank 0 can capture a final-layer drafter tap without a peer hop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GlobalLayout {
     rank: usize,
