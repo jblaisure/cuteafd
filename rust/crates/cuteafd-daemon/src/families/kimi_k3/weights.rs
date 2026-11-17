@@ -67,7 +67,7 @@ impl GlobalLayout {
     #[cfg(test)]
     pub(crate) fn pack(&self, cfg: &KimiK3Config, mut read: impl FnMut(&str) -> Result<LoadedTensor>) -> Result<PackedGlobal> {
         ensure!(self.rank < 2, "Kimi global rank outside admission");
-        let whole = self.rank == 0 && self.operands.contains_key("output.norm");
+        let whole = self.rank == 0 && (self.operands.contains_key("head") || self.core_head.is_some());
         let mut expected = Self::pair(cfg)?;
         if let Some(head) = &self.core_head {
             ensure!((self.rank == 1 || whole) && head.stem == "language_model.lm_head"
@@ -572,7 +572,7 @@ mod tests {
         let mut cfg = cfg();
         cfg.vocab_size = 8;
         let pair = GlobalLayout::pair(&cfg)?;
-        assert_eq!(pair[0].operands, BTreeMap::from([("embedding", 64)]));
+        assert_eq!(pair[0].operands, BTreeMap::from([("embedding", 64), ("output.score", 16), ("output.norm", 8)]));
         assert_eq!(pair[1].operands, BTreeMap::from([("head", 64), ("output.score", 16), ("output.norm", 8)]));
         let mut names = Vec::new();
         for (rank, layout) in pair.iter().enumerate() {
@@ -601,7 +601,9 @@ mod tests {
             }
             assert!(pair[1 - rank].check(&packed).is_err());
         }
-        assert_eq!(names, ["language_model.model.embed_tokens.weight", "language_model.lm_head.weight",
+        assert_eq!(names, ["language_model.model.embed_tokens.weight",
+            "language_model.model.output_attn_res_norm.weight", "language_model.model.output_attn_res_proj.weight",
+            "language_model.model.norm.weight", "language_model.lm_head.weight",
             "language_model.model.output_attn_res_norm.weight", "language_model.model.output_attn_res_proj.weight",
             "language_model.model.norm.weight"]);
         for invalid in 0..3 {

@@ -67,7 +67,8 @@ impl GlobalLayout {
         ensure!(!cfg.tie_embeddings, "Kimi global weights require the checkpoint's untied head");
         let matrix = extent(&[cfg.vocab_size, cfg.hidden, 2])?;
         Ok([Self { rank: 0, hidden: cfg.hidden, vocab: cfg.vocab_size,
-                core_head: None, operands: BTreeMap::from([("embedding", matrix)]) },
+                core_head: None, operands: BTreeMap::from([("embedding", matrix),
+                    ("output.score", extent(&[cfg.hidden, 4])?), ("output.norm", extent(&[cfg.hidden, 2])?)]) },
             Self { rank: 1, hidden: cfg.hidden, vocab: cfg.vocab_size,
                 core_head: None, operands: BTreeMap::from([("head", matrix), ("output.score", extent(&[cfg.hidden, 4])?),
                     ("output.norm", extent(&[cfg.hidden, 2])?)]) }])
