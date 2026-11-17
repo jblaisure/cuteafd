@@ -4039,6 +4039,7 @@ fn glm5_flash_selected_working_set_drives_plan_request_and_runtime_buffers() {
         process.serving(&input, 0, 0, 0, 0).unwrap();
         process.spark_link(&input, checkpoint.spark_input_is_bf16()).unwrap();
         let selected = glmf::admission::prepare(&input, 188, true, process).unwrap().admit().unwrap();
+        assert_eq!(report.phase_ledger.as_ref().unwrap().pool_policy, selected.solved.pool_policy);
         let (placed, working) = (&selected.placement, &selected.working);
         assert_eq!(working.rtx_layers.len(), expected_rtx);
         assert_eq!(placed.onboard_layers, expected_rtx);

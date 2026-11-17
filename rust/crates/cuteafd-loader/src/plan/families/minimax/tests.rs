@@ -2065,6 +2065,25 @@ fn explicit_and_auto_heads_public_layouts_are_executable() {
         assert_eq!(report.attention_placement, attention.unwrap_or(AttentionPlacement::Heads));
         let placed = report.solver_placement.as_ref().unwrap_or_else(|| panic!("qualified default wire produces a shared solved plan: {report:#?}"));
         assert_eq!(placed.attention_placement, report.attention_placement);
+        let checkpoint = Checkpoint::open(dir.path()).unwrap();
+        let catalog = crate::read_expert_catalog(dir.path()).unwrap();
+        let cfg = MiniMaxM3Config::from_hf(&checkpoint.config).unwrap();
+        use crate::families::minimax_m3::admission::{gather, Coordinator, FactsRequest};
+        let runtime = gather(&FactsRequest { target_pool_tokens: None, vision: plan::MediaMode::Off,
+            vision_replicas: 1, media_cache_bytes: None, checkpoint: &checkpoint, cfg: &cfg, catalog: &catalog,
+            manifest_path: &manifest, manifest: std::sync::Arc::new(serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap()),
+            coordinator: Coordinator::Measured { samples: vec![(96 << 30, 96 << 30, 95 << 30); 2], loaded_code: vec![0; 2] },
+            attention, split_wire: plan::layout::LayoutOptions::default().minimax_split_wire, physical_devices: &[0, 1],
+            spark_ranks: 4, spark_bytes: 100 << 30, spark_rank_bytes: vec![],
+            prefill: crate::placement::planner::PrefillShape { rows: 1024, waves: 3 }, context_tokens: 32768,
+            pool_tokens: Some(32768), sequences: 16, host: (512 << 30, 480 << 30), host_cache_bytes: Some(0),
+            prefix_entries: 64, drafter: None, replies: Default::default(),
+            head: crate::placement::planner::serving::BlasHead::Gemm, expert_usage: false,
+            resident_weight_limit: crate::placement::ResidentWeights(80 << 30) }).unwrap();
+        let request = crate::placement::families::minimax_m3::request(runtime.context, Some(32768),
+            crate::placement::Onboard::Layers(0), runtime.prefill, crate::placement::planner::Operation::Serving,
+            runtime.resident_weight_limit, Default::default());
+        assert_eq!(report.phase_ledger.as_ref().unwrap().pool_policy, runtime.admit(request).unwrap().solved.pool_policy);
         assert_eq!(plan::layout::LayoutOptions::default().minimax_split_wire,
             Some(crate::families::minimax_m3::execution::WirePrecision::F32));
     }
