@@ -341,6 +341,24 @@ mod tests {
     use crate::placement::FfnMode;
 
     #[test]
+    fn final_layer_draft_tap_has_charged_rank_zero_output_weights() -> Result<()> {
+        let cfg = KimiK3Config::from_hf(&crate::plan::testing::kimi_k3_config())?;
+        for ranks in [1, 2] {
+            let globals = GlobalLayout::ranks_with_core(&cfg, &CoreInventory::default(), ranks)?;
+            let entry = &globals[0];
+            assert_eq!(entry.operands["output.score"], cfg.hidden * 4);
+            assert_eq!(entry.operands["output.norm"], cfg.hidden * 2);
+            let arena = coordinator_arena(0, entry, &[])?;
+            let names = entry.arena_tensors()?;
+            assert_eq!(names.iter().filter(|(name, _)| name == "global.output.score").count(), 1);
+            assert_eq!(names.iter().filter(|(name, _)| name == "global.output.norm").count(), 1);
+            assert_eq!(entry.demand()?.bytes, entry.bytes()? as u64);
+            let _ = arena;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn physical_weight_requests_partition_exact_payloads_for_bf16_k6_and_native_attention() -> Result<()> {
         let dir = tempfile::tempdir()?;
         crate::plan::testing::write_kimi_core_snapshot(dir.path(), false);
