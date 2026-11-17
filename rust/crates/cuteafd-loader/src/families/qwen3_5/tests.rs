@@ -660,8 +660,7 @@ fn public_plan_and_runtime_share_resolved_pool_with_optional_target_and_growth()
                     layout.target_pool_tokens = target;
                     let report = plan::plan(dir.path(), &options).unwrap();
                     assert!(report.executable(), "{:?}", report.hints);
-                    let physical = crate::placement::ArchContext::for_device("sm_120", capacity);
-                    let physical_bytes = if physical.total_bytes == 0 { 32 << 30 } else { physical.total_bytes };
+                    let physical_bytes = crate::placement::inventory::PRO_TOTAL_BYTES;
                     let budgets = qwen3_5::sampled_budgets(physical_bytes, physical_bytes, Some(capacity),
                         crate::plan::testing::SimulatedHost::raptor().host_ram).unwrap();
                     let runtime = qwen3_5::admit(Request { context: Context::resolve(cfg.max_context as u64, None),
