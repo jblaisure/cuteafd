@@ -374,7 +374,7 @@ fn v4_inputs(report: &PlanReport, input: &super::super::PlanInput, options: &Lay
         requested_pool: options.pool_tokens.filter(|&n| n > 0), onboard,
         pending_code,
         context,
-        attention: report.requested_attention, extra, physical_bytes: Vec::new(),
+        attention: report.requested_attention, extra, physical_bytes: options.rtx_bytes.iter().map(|&cap| crate::placement::CoordinatorCard::planned(cap, options.physical_sms).physical_bytes).collect(),
         host: Some(v4::V4Host { total: host.0, available: host.1, headroom: (8 << 30).max(host.0 / 10),
             cache_bytes: options.host_cache_bytes, prefix_entries: options.prefix_entries("deepseek_v4"),
             span_rows: report.prefill_span_rows.unwrap_or(shape.prefill_rows * options.prefill_waves),

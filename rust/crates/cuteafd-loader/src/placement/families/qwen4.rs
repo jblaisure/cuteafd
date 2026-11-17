@@ -45,6 +45,7 @@ pub fn check_dual_layer_owners(owners: &[usize]) -> anyhow::Result<()> {
 }
 
 pub struct QwenInputs<'a> {
+    pub physical_bytes: Vec<u64>,
     pub target_pool: Option<u64>,
     pub experts: Option<QwenExperts>,
     pub onboard: Onboard,
@@ -227,7 +228,7 @@ impl<'a> QwenSingle<'a> {
         let page = QWEN_UNIT_ROWS as u64;
         let requested = inputs.requested_pool.filter(|&tokens| tokens > 0).map(|tokens|
             tokens.div_ceil(page).checked_mul(page).ok_or(Refusal::Overflow("Qwen pool request"))).transpose()?;
-        let cards = [inputs.capacity_bytes];
+        let cards = [inputs.physical_bytes.first().copied().unwrap_or(inputs.capacity_bytes)];
         let mut facts = PoolFacts::new(&cards, inputs.context, requested, page);
         facts.target = inputs.target_pool;
         let pool = prepare_pool(facts);
@@ -748,6 +749,7 @@ pub fn dual_peer_diagnostics(enabled: bool) -> Vec<Demand> {
         "expert peer diagnostics", 256, Basis::Exact)).to_vec()
 }
 pub struct QwenDualInputs<'a> {
+    pub physical_bytes: Vec<u64>,
     pub target_pool: Option<u64>,
     pub experts: Option<QwenExperts>,
     pub resident_weight_limit: Option<ResidentWeights>,
@@ -902,7 +904,7 @@ impl<'a> QwenDual<'a> {
         let (arena, resident) = tp2_arena(inputs)?;
         let requested = inputs.requested_pool.filter(|&tokens| tokens > 0).map(|tokens|
             tokens.div_ceil(page).checked_mul(page).ok_or(Refusal::Overflow("Qwen pool request"))).transpose()?;
-        let cards = inputs.gpus.map(|gpu| gpu.capacity_bytes);
+        let cards = [0, 1].map(|rank| inputs.physical_bytes.get(rank).copied().unwrap_or(inputs.gpus[rank].capacity_bytes));
         let mut facts = PoolFacts::new(&cards, inputs.context, requested, page);
         facts.target = inputs.target_pool;
         let policy = prepare_pool(facts);
@@ -1318,7 +1320,7 @@ mod tests {
         let costs = vec![Some(tp2_cost()); 4];
         let extra = vec![vec![]; 4];
         for count in 0..=4 {
-            let inputs = QwenDualInputs { target_pool: None, experts: Some(hybrid_fixture(2, 4)),
+            let inputs = QwenDualInputs { physical_bytes: Vec::new(), target_pool: None, experts: Some(hybrid_fixture(2, 4)),
                 blas_head: crate::placement::planner::serving::BlasHead::Native,
                 resident_weight_limit: None, context: crate::placement::planner::Context::pinned(131072),
                 admission: QwenAdmissionInputs { prefill_shape: None, cfg: &cfg, layers: 4, mtp: false,
@@ -1443,7 +1445,7 @@ mod tests {
         let extra = dual_ple_demands(&cfg, 4, &resident).unwrap();
         let experts = vec![Some(tp2_cost()); 4];
         let gib = 1u64 << 30;
-        let inputs = QwenDualInputs { target_pool: None,
+        let inputs = QwenDualInputs { physical_bytes: Vec::new(), target_pool: None,
         experts: None,            blas_head: crate::placement::planner::serving::BlasHead::Native, resident_weight_limit: None, context: crate::placement::planner::Context::pinned(131_072),
             admission: QwenAdmissionInputs { prefill_shape: None, cfg: &cfg, layers: 4, mtp: false,
                 kv_format: Qwen4KvCache::Bf16, manifest: None, prefill_rows: 4096, slots: 16,
@@ -1672,7 +1674,7 @@ mod tests {
         requested_pool: Option<u64>,
         loaded: ResidentWeights, limit: Option<ResidentWeights>) -> QwenInputs<'a> {
         let gib = 1u64 << 30;
-        QwenInputs { target_pool: None, experts: None, onboard: Onboard::Auto,
+        QwenInputs { physical_bytes: Vec::new(), target_pool: None, experts: None, onboard: Onboard::Auto,
             blas_head: crate::placement::planner::serving::BlasHead::Native, resident_weight_limit: limit, loaded_weights: loaded,
             arenas: vec![], expert_arenas: vec![], preallocation: false, future: vec![],
             spark_reply_format: cuteafd_core::SparkReplyFormat::Bf16, context: crate::placement::planner::Context::pinned(131_072),
@@ -1747,7 +1749,7 @@ mod tests {
         let experts = vec![Some(tp2_cost()); cfg.layers];
         let extra = vec![vec![]; cfg.layers];
         check_spark_encoder_budgets(|encoders| {
-            let inputs = QwenDualInputs { target_pool: None,
+            let inputs = QwenDualInputs { physical_bytes: Vec::new(), target_pool: None,
         experts: None,                blas_head: crate::placement::planner::serving::BlasHead::Native,
                 resident_weight_limit: None, context: crate::placement::planner::Context::pinned(131072),
                 admission: QwenAdmissionInputs { prefill_shape: None, cfg: &cfg, layers: cfg.layers, mtp: false,
@@ -2043,7 +2045,7 @@ mod tests {
             let build = |bytes| {
                 let mut host = QwenHost::ample(&cfg, 2, 4096).unwrap();
                 host.host_embedding = bytes;
-                let inputs = QwenDualInputs { target_pool: None,
+                let inputs = QwenDualInputs { physical_bytes: Vec::new(), target_pool: None,
         experts: None,                    blas_head: crate::placement::planner::serving::BlasHead::Native,
                     resident_weight_limit: None, context: crate::placement::planner::Context::pinned(131072),
                     admission: single_inputs(&cfg, Baseline::Planned { context_bytes: 0, loaded_bytes: 0 },
@@ -2120,7 +2122,7 @@ mod tests {
         let experts: Vec<_> = (0..4).map(|_| Some(ExpertCost { whole: Bytes2 { resident: 0, staging: 0 },
             half: costs, tp2: true, whole_supported: true, spark_ok: true })).collect();
         let gib = 1u64 << 30;
-        let build = || QwenDualInputs { target_pool: None,
+        let build = || QwenDualInputs { physical_bytes: Vec::new(), target_pool: None,
         experts: None,            blas_head: crate::placement::planner::serving::BlasHead::Native, resident_weight_limit: None, context: crate::placement::planner::Context::pinned(131_072),
             admission: QwenAdmissionInputs { prefill_shape: None, cfg: &cfg, layers: 4, mtp: false,
                 kv_format: Qwen4KvCache::Bf16, manifest: None, prefill_rows: 4096, slots: 16,

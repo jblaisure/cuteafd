@@ -242,7 +242,7 @@ fn reconciliation_provenance(source_commit: &str, source_dirty: &str, toolchain:
 fn placement_inputs<'a>(args: &EngineArgs, admission: QwenAdmissionInputs<'a>, sparks: usize,
     (available, total): (u64, u64), pending: u64, context: cuteafd_loader::placement::planner::Context,
     host: qwen4::QwenHost) -> qwen4::QwenInputs<'a> {
-    qwen4::QwenInputs { target_pool: None,
+    qwen4::QwenInputs { physical_bytes: vec![total], target_pool: None,
         experts: None, onboard: cuteafd_loader::placement::Onboard::Auto,        arenas: vec![], expert_arenas: vec![], preallocation: false, future: vec![],
         blas_head: crate::shared::target_head::TargetHead::configured().blas_head(!args.mtp_fp8_head),
         loaded_weights: Default::default(),
@@ -792,7 +792,7 @@ mod tests {
         for capacity in [96u64 << 30, 192u64 << 30] {
             let onboard = Onboard::Auto;
             {
-                let mut inputs = qwen4::QwenDualInputs { target_pool: None,
+                let mut inputs = qwen4::QwenDualInputs { physical_bytes: Vec::new(), target_pool: None,
         experts: None,        blas_head: cuteafd_loader::placement::planner::serving::BlasHead::Native,
         resident_weight_limit: None, context: cuteafd_loader::placement::planner::Context::pinned(131_072),
                     owner_manifests: [None; 2],
@@ -1011,7 +1011,7 @@ mod tests {
             args.token_io.embed_placement = if host { crate::shared::token_io::EmbedPlacement::Host }
                 else { crate::shared::token_io::EmbedPlacement::Gpu };
             let report = plan_input.plan(&PlanOptions { placement: ExpertPlacement::Local,
-                layout: Some(LayoutOptions { host_memory: Some(cuteafd_loader::plan::testing::SimulatedHost::raptor().host_ram), rtx_bytes: capacities.to_vec(),
+                layout: Some(LayoutOptions { host_memory: Some(cuteafd_loader::plan::testing::SimulatedHost::raptor().host_ram), rtx_bytes: capacities.to_vec(), physical_sms: Some(if capacities.iter().any(|&cap| cap <= 32 << 30) {170} else {188}),
                     context_tokens: 131072, prefill_rows: 64, concurrency: 8, state_slots: Some(8),
                     prefix_slots: Some(0), native_mtp_layers: args.mtp, host_embedding: host,
                     qwen_attention_plan_rows: attention_rows,
@@ -1028,7 +1028,7 @@ mod tests {
             let host_embedding = if host {
                 u64::try_from(cuteafd_loader::families::qwen4::weight_layout::embedding_table_bytes(&checkpoint)?)?
             } else { 0 };
-            let (runtime, solved) = qwen4::dual_admitted(&qwen4::QwenDualInputs { target_pool: None,
+            let (runtime, solved) = qwen4::dual_admitted(&qwen4::QwenDualInputs { physical_bytes: Vec::new(), target_pool: None,
         experts: Some(qwen4::QwenExperts::read(&catalog, &lib, 4, 2, args.prefill_rows.max(64) as u64)?), blas_head: crate::shared::target_head::TargetHead::configured().blas_head(!args.mtp_fp8_head),
         resident_weight_limit: None, context: cuteafd_loader::placement::planner::Context::pinned(131_072), owner_manifests: manifests.each_ref().map(Some), admission,
                 gpus: [0, 1].map(|rank| GpuBudget { capacity_bytes: capacities[rank],
@@ -1101,7 +1101,7 @@ mod tests {
                 let context = pool.unwrap_or(131072);
                 let report = input.plan(&PlanOptions {
                     placement: ExpertPlacement::Local,
-                    layout: Some(LayoutOptions { host_memory: Some(cuteafd_loader::plan::testing::SimulatedHost::raptor().host_ram), rtx_bytes: vec![capacity], context_tokens: context,
+                    layout: Some(LayoutOptions { host_memory: Some(cuteafd_loader::plan::testing::SimulatedHost::raptor().host_ram), rtx_bytes: vec![capacity], physical_sms: Some(if capacity <= 32 << 30 {170} else {188}), context_tokens: context,
                         pool_tokens: pool, qwen_kv: kv_format, concurrency, state_slots: Some(concurrency), prefix_slots: Some(0),
                         ..Default::default() }), ..Default::default()
                 })?;
@@ -1121,7 +1121,7 @@ mod tests {
                     &cfg, &vec![0; cfg.layers], 1, false, Default::default(),
                     cuteafd_loader::families::qwen4::weight_layout::embedding_table_bytes(&checkpoint)?)?
                     .into_iter().map(|(_, arena)| arena).collect();
-                let planned = qwen4::QwenInputs { target_pool: None,
+                let planned = qwen4::QwenInputs { physical_bytes: Vec::new(), target_pool: None,
                     experts: Some(qwen4::QwenExperts::headers(&catalog, cfg.layers, 1)?),
                     onboard: Default::default(), arenas, expert_arenas: vec![], preallocation: true, future: vec![],
                     blas_head: crate::shared::target_head::TargetHead::configured().blas_head(!args.mtp_fp8_head),
