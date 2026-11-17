@@ -227,7 +227,8 @@ impl<'a> QwenSingle<'a> {
         let page = QWEN_UNIT_ROWS as u64;
         let requested = inputs.requested_pool.filter(|&tokens| tokens > 0).map(|tokens|
             tokens.div_ceil(page).checked_mul(page).ok_or(Refusal::Overflow("Qwen pool request"))).transpose()?;
-        let mut facts = PoolFacts::new(&[inputs.capacity_bytes], inputs.context, requested, page);
+        let cards = [inputs.capacity_bytes];
+        let mut facts = PoolFacts::new(&cards, inputs.context, requested, page);
         facts.target = inputs.target_pool;
         let pool = prepare_pool(facts);
         let context = pool.compiled_context();
