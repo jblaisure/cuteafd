@@ -1983,7 +1983,7 @@ impl<'a> LocalLane<'a> {
             delta: self.plane("delta", rows, 7168)?, score_weight, norm_weight, output };
         // This specialization neither advances prefix/bank state nor normalizes
         // the mixture. The following target consumer still runs exactly once.
-        self.lane.stream.device.run(|| program.launch(batch, self.lane.stream.raw))?;
+        self.lane.stream.device.run(|| Ok(program.launch(batch, self.lane.stream.raw)?))?;
         Ok(output)
     }
 
