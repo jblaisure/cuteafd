@@ -901,6 +901,20 @@ impl<'a> KimiResidual<'a> {
         Ok(Self { program, rows })
     }
 
+    /// Read-only, pre-norm aggregate for the next attention/output consumer.
+    pub fn load_stream(programs: &'a Programs<'a>, candidates: usize) -> W8Result<Self> {
+        let site = KimiResidualSite { candidates, prefix: KimiPrefixMode::Add, append: false };
+        if !(2..=9).contains(&candidates) { return Err(KimiW8Error::Invalid("stream candidates")); }
+        let program = programs.program(&format!("kimik3_attn_res_stream_c{candidates}"),
+            &["arena", "delta", "score_weight", "norm_weight", "out"])?;
+        validate_residual_manifest(program.spec(), site)?;
+        if program.spec().geometry["capture_stream"].as_bool() != Some(true) {
+            return Err(KimiW8Error::Invalid("pre-norm stream manifest"));
+        }
+        let rows = program.spec().capacity_rows as usize;
+        Ok(Self { program, rows })
+    }
+
     pub fn arena_bytes(arena_rows: usize) -> W8Result<usize> {
         if arena_rows == 0 || arena_rows > i32::MAX as usize {
             return Err(KimiW8Error::Invalid("arena rows"));

@@ -334,9 +334,9 @@ impl<'a> NativeDraft<'a> {
         let offset = tap_offset(to, rows, cfg.taps.len() * cfg.hidden, self.tap_rows())?;
         ensure!(Rc::ptr_eq(local.stream(), &self.target_streams[0]),
             "Kimi draft taps exceed staging or use the wrong producer stream");
-        let hidden = local.terminal_residual(rows)?;
+        let hidden = local.draft_stream(layer, rows)?;
         local.stream().device.run(|| {
-            // SAFETY: terminal_residual and this strided copy share the exact producer
+            // SAFETY: draft_stream and this strided copy share the exact producer
             // stream; target staging survives every reader and is not graph-captured.
             unsafe { self.owners.draft.device.library.glm_dflash_tap(hidden.ptr.cast_const(),
                 self.taps.buffer.ptr.wrapping_byte_add(offset), rows, cfg.hidden, cfg.taps.len() * cfg.hidden,
