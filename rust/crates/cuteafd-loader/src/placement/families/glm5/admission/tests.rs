@@ -254,9 +254,10 @@ fn draft_home_is_one_solve_choice_that_balances_and_charges_its_bridge() {
     let solve = |gpu: u8| {
         let mut input = production_input(&cfg, 2, 2, PrefillShape { rows: 128, waves: 3 });
         input.draft = facts.clone();
+        let maximum = input.pool.maximum_tokens().div_ceil(input.pool.unit_rows());
         input.owners.push(Component::allocation(Allocation::buffer("test.pinned", Location::coordinator(gpu),
             1 << 30, Lifetime::TARGET, Category::Weights, "single-copy owner pinned to one GPU"),
-            ByteCurve::fixed(1 << 30, 64), false, 64));
+            ByteCurve::fixed(1 << 30, maximum), false, maximum));
         input.prepare().unwrap().admit(request()).unwrap()
     };
     // GPU1 already binds: the drafter stays beside its target head, no bridge.
