@@ -353,7 +353,9 @@ mod tests {
             assert_eq!(names.iter().filter(|(name, _)| name == "global.output.score").count(), 1);
             assert_eq!(names.iter().filter(|(name, _)| name == "global.output.norm").count(), 1);
             assert_eq!(entry.demand()?.bytes, entry.bytes()? as u64);
-            let _ = arena;
+            assert_eq!(arena.payload_bytes(), entry.bytes()?);
+            assert_eq!(arena.view("global.output.score").unwrap().bytes(), cfg.hidden * 4);
+            assert_eq!(arena.view("global.output.norm").unwrap().bytes(), cfg.hidden * 2);
         }
         Ok(())
     }

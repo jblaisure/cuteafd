@@ -562,6 +562,23 @@ mod tests {
     const TARGET_TAP_ROWS: usize = 4096;
 
     #[test]
+    fn taps_capture_read_only_next_consumer_stream_on_the_target_producer() {
+        let source = include_str!("draft.rs");
+        let tap = source.split("pub(crate) fn tap_at").nth(1).unwrap()
+            .split("/// Join the previous context readers").next().unwrap();
+        assert!(tap.contains("local.draft_stream(layer, rows)?"));
+        assert!(!tap.contains("terminal_residual"));
+        assert!(tap.contains("Rc::ptr_eq(local.stream(), &self.target_streams[0])"));
+        let source = include_str!("device.rs");
+        let stream = source.split("pub(crate) fn draft_stream").nth(1).unwrap()
+            .split("pub(crate) fn capture_post_ffn").next().unwrap();
+        assert!(stream.contains("draft_mix_site(&self.cfg, layer)?"));
+        assert!(stream.contains("self.global.buffer(\"output.score\")?"));
+        assert!(stream.contains("self.programs.w8.streams.get"));
+        assert!(!stream.contains("residual_body("));
+    }
+
+    #[test]
     fn block_tp2_private_flags_follow_target_producer_event_on_lead_stream() {
         let block=include_str!("../../shared/speculation/block_dspark.rs");
         let load=block.split("pub(crate) fn load_tp2_with").nth(1).unwrap()
