@@ -516,8 +516,13 @@ fn placement(report: &PlanReport, input: &crate::plan::PlanInput, options: &Layo
         }.into());
     }
     let page_tokens = if attention == crate::placement::AttentionPlacement::Context { 128 } else { 64 };
-    let pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-        &options.rtx_bytes[..gpus].iter().map(|&bytes| crate::placement::CoordinatorCard::planned(bytes, options.physical_sms).physical_bytes).collect::<Vec<_>>(), crate::placement::planner::Context::resolve(context, (options.context_tokens > 0).then_some(options.context_tokens)), options.pool_tokens, page_tokens));
+    let card_bytes = options.rtx_bytes[..gpus].iter().map(|&bytes|
+        crate::placement::CoordinatorCard::planned(bytes, options.physical_sms).physical_bytes).collect::<Vec<_>>();
+    let mut pool_facts = crate::placement::PoolFacts::new(&card_bytes,
+        crate::placement::planner::Context::resolve(context, (options.context_tokens > 0).then_some(options.context_tokens)),
+        options.pool_tokens, page_tokens);
+    pool_facts.target = options.target_pool_tokens;
+    let pool = crate::placement::prepare_pool(pool_facts);
     let maximum_pages = pool.maximum_tokens().div_ceil(page_tokens);
     let prefill = PrefillShape { rows, waves: lanes };
     let operation = Operation::Serving;
@@ -702,8 +707,13 @@ pub(crate) fn native_layout_with_metadata(checkpoint: &Checkpoint, options: &Lay
         LocalPhysicalSource::read(&cfg, &catalog, local, &physical, Some(metadata))
     }).transpose()?;
     let page_tokens = if attention == crate::placement::AttentionPlacement::Context { 2 * glm::PAGE_ROWS } else { glm::PAGE_ROWS };
-    let pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-        &options.rtx_bytes.iter().map(|&bytes| crate::placement::CoordinatorCard::planned(bytes, options.physical_sms).physical_bytes).collect::<Vec<_>>(), crate::placement::planner::Context::resolve(context, (options.context_tokens > 0).then_some(options.context_tokens)), options.pool_tokens, page_tokens));
+    let card_bytes = options.rtx_bytes.iter().map(|&bytes|
+        crate::placement::CoordinatorCard::planned(bytes, options.physical_sms).physical_bytes).collect::<Vec<_>>();
+    let mut pool_facts = crate::placement::PoolFacts::new(&card_bytes,
+        crate::placement::planner::Context::resolve(context, (options.context_tokens > 0).then_some(options.context_tokens)),
+        options.pool_tokens, page_tokens);
+    pool_facts.target = options.target_pool_tokens;
+    let pool = crate::placement::prepare_pool(pool_facts);
     let maximum_pages = pool.maximum_tokens().div_ceil(page_tokens);
     let (draft, mut additional, prefix_quota) = production_serving(options, checkpoint, &cfg,
         context, attention, gpu_count, maximum_pages)?;

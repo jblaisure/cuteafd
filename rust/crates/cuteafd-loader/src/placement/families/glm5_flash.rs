@@ -171,6 +171,7 @@ pub fn context_buffers(cfg: &GlmNextConfig, extent: u64, rows: u64, lanes: u64,
 
 #[derive(Debug, Clone)]
 pub struct GlmfInputs<'a> {
+    pub target_pool_tokens: Option<u64>,
     pub resident_weight_limit: Option<ResidentWeights>,
     pub spark_reply_format: cuteafd_core::SparkReplyFormat,
     /// Shared model extent and optional operator context pin.
@@ -622,7 +623,7 @@ pub(crate) mod tests {
 
     pub(crate) fn inputs(cfg: &GlmNextConfig, ranks: usize, capacity: u64) -> GlmfInputs<'_> {
         let context = ArchContext::coordinator(capacity, None).context_bytes;
-        GlmfInputs { resident_weight_limit: None, spark_reply_format: cuteafd_core::SparkReplyFormat::Bf16, context: crate::placement::planner::Context::pinned(262_144),
+        GlmfInputs { target_pool_tokens: None, resident_weight_limit: None, spark_reply_format: cuteafd_core::SparkReplyFormat::Bf16, context: crate::placement::planner::Context::pinned(262_144),
             attention: Default::default(), cfg, layers: cfg.layers,
             gpus: (0..ranks).map(|rank| (capacity, Baseline::Planned {
                 context_bytes: context + inventory::loaded_code_allowance("glmf", "exl3", ranks == 2,
@@ -664,6 +665,18 @@ pub(crate) mod tests {
             *baseline = Baseline::Measured { free_bytes: *capacity - context_bytes - loaded_bytes };
         }
         input
+    }
+
+    #[test]
+    fn small_card_default_and_explicit_target_are_preparation_facts() {
+        let cfg = GlmNextConfig::from_hf(&crate::plan::testing::glm5_flash_config(4)).unwrap();
+        let mut input = inputs(&cfg, 1, 32 << 30);
+        let process = || admission::ProcessOwners::new((512 << 30, 512 << 30), 8 << 30)
+            .with_spark_capacities(crate::serving_capacity::spark_memory::serving_bytes());
+        let prepared = admission::prepare(&input, 170, true, process()).unwrap();
+        assert_eq!(prepared.pool.target(), 1 << 20);
+        input.target_pool_tokens = Some(3 << 20);
+        assert_eq!(admission::prepare(&input, 170, true, process()).unwrap().pool.target(), 3 << 20);
     }
 
     #[test]

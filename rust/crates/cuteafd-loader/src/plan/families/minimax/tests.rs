@@ -885,7 +885,7 @@ fn shared_recipe_supports_layouts_and_measured_baselines_without_replanning() {
             Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
         let planned = inputs.admit(request.clone()).unwrap();
         assert_eq!(planned.placement.pool_tokens, 32768);
         assert!(planned.placement.layers.iter().filter(|l| l.experts != ExpertHome::Dense)
@@ -921,7 +921,7 @@ fn shared_recipe_refuses_invalid_owners_and_request_geometry() {
         inputs.prefill, Operation::Serving, None, Default::default());
     let mut inputs = inputs.clone();
     inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+        &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
     for concurrency in [0, 65, 128] {
         let mut bad = inputs.clone();
         bad.sequences = concurrency;
@@ -1171,7 +1171,7 @@ fn prefill_token_uploads_match_entry_units_only() {
                 inputs.prefill, Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
             let admitted = inputs.admit(request).unwrap();
             let owners = admitted.solved.facts.allocations.iter()
                 .filter(|owner| owner.id.ends_with(".route_ids.upload"))
@@ -1203,7 +1203,7 @@ fn prefix_ordered_uploads_match_each_request_destination() {
                 inputs.prefill, Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
             let admitted = inputs.admit(request).unwrap();
             let mut bytes = 0;
             for gpu in 0..gpus {
@@ -1529,7 +1529,7 @@ fn request_descriptor_allocations_equal_recipe_on_one_and_two_rtx() {
                 inputs.prefill, Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
             let admitted = inputs.admit(request).unwrap();
             let actual = admitted.solved.facts.allocations.iter().filter(|owner|
                 ["minimax.cache.", "minimax.prefix.h2d.", "minimax.rope.", "minimax.decode.",
@@ -1555,7 +1555,7 @@ fn compact_decode_table_upload_is_one_exact_pinned_owner_per_rank() {
                 inputs.prefill, Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
             let admitted = inputs.admit(request).unwrap();
             let allocations = &admitted.solved.facts.allocations;
             for gpu in 0..gpus {
@@ -1798,7 +1798,7 @@ fn explicit_heads_and_layers_both_qualify_serving() {
         heads.prefill, Operation::Serving, None, Default::default());
     let mut heads = heads.clone();
     heads.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; heads.gpus], heads.context, Some(1 << 20), shared::PAGE_ROWS));
+        &vec![96 << 30; heads.gpus], heads.context, Some(1 << 20), shared::PAGE_ROWS));
     assert!(heads.admit_serving(request.clone()).is_ok());
     assert!(heads.admit(request).is_ok(), "explicit planning remains available");
     let layers = recipe_inputs(2, 4);
@@ -1807,7 +1807,7 @@ fn explicit_heads_and_layers_both_qualify_serving() {
         layers.prefill, Operation::Serving, None, Default::default());
     let mut layers = layers.clone();
     layers.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; layers.gpus], layers.context, Some(1 << 20), shared::PAGE_ROWS));
+        &vec![96 << 30; layers.gpus], layers.context, Some(1 << 20), shared::PAGE_ROWS));
     assert!(layers.admit_serving(request).is_ok());
     assert_eq!(shared::Owner::Kv { layer: 3, plane: "index" }.id(), "minimax.kv.3.index");
     for gpu in 0..2 {
@@ -1864,7 +1864,7 @@ fn heads_expert_backend_charges_tp2_exchange_separately_without_weight_replicati
                 inputs.prefill, Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(1 << 20), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(1 << 20), shared::PAGE_ROWS));
             let admitted = inputs.admit(request).unwrap();
             let facts = &admitted.solved.facts;
             let ids = facts.allocations.iter().map(|a| a.id.as_str()).collect::<Vec<_>>();
@@ -1952,7 +1952,7 @@ fn heads_gather_uses_sliced_targets_mount_sources_and_replicated_host_prefix_pag
     let catalog = crate::read_expert_catalog(dir.path()).unwrap();
     let manifest_path = dir.path().join("PROGRAMS.json");
     std::fs::write(&manifest_path, expected.manifest.to_string()).unwrap();
-    let mut request = FactsRequest { vision: crate::plan::MediaMode::Off, vision_replicas: 1, media_cache_bytes: None, spark_rank_bytes: Vec::new(), checkpoint: &checkpoint, cfg: &cfg, catalog: &catalog,
+    let mut request = FactsRequest { target_pool_tokens: None, vision: crate::plan::MediaMode::Off, vision_replicas: 1, media_cache_bytes: None, spark_rank_bytes: Vec::new(), checkpoint: &checkpoint, cfg: &cfg, catalog: &catalog,
         manifest_path: &manifest_path, manifest: expected.manifest.clone(),
         coordinator: Coordinator::Planned { cards: vec![CoordinatorCard {
             physical_bytes: 96 << 30, logical_bytes: 96 << 30 }; 2] },
@@ -2095,7 +2095,7 @@ fn selected_push_envelope_replaces_mount_until_commit() {
                 inputs.prefill, Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(1 << 20), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(1 << 20), shared::PAGE_ROWS));
             let admitted = inputs.admit(request.clone()).unwrap();
             let expected = inputs.push_host_envelopes[count].as_ref().unwrap();
             assert_eq!(admitted.push_host_envelope.as_ref(), Some(expected));
@@ -2187,7 +2187,7 @@ fn decode_token_upload_is_one_exact_entry_rank_pair() {
                 inputs.prefill, Operation::Serving, None, Default::default());
             let mut inputs = inputs.clone();
             inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+                &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
             let admitted = inputs.admit(request).unwrap();
             let id = Owner::DecodeTokenIds { gpu: 0 };
             assert_eq!(id.inventory_name().unwrap(), "decode.token_ids.0");
@@ -2228,7 +2228,7 @@ fn split_recipe_precision_roles_and_onboard_route_receives_are_exact() {
                     inputs.prefill, Operation::Serving, None, Default::default());
                 let mut inputs = inputs.clone();
                 inputs.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
+                    &vec![96 << 30; inputs.gpus], inputs.context, Some(32768), shared::PAGE_ROWS));
                 let admitted = inputs.admit(request.clone()).unwrap();
                 assert!(admitted.placement.layers.iter().zip(&inputs.owners).all(|(layer, &gpu)|
                     layer.mode == LayerMode::Whole { gpu, ffn: FfnMode::Split }));
@@ -2321,6 +2321,9 @@ fn prepared_pool_growth_retains_onboarding_and_policy_after_scope_exit() {
         let inputs = recipe_inputs(gpus, 4);
         let request = shared::request(inputs.context, None, crate::placement::Onboard::Auto,
             inputs.prefill, Operation::Serving, None, Default::default());
+        let small = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
+            &vec![32 << 30; gpus], inputs.context, None, shared::PAGE_ROWS));
+        assert_eq!(small.target(), 1 << 20);
         let default = inputs.admit(request.clone()).unwrap();
         let mut growing = inputs.clone();
         growing.pool = MemoryPolicy { kv_max: Some(100_000_000), ..Default::default() }.scoped(||

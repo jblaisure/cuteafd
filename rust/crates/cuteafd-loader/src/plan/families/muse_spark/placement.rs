@@ -160,10 +160,12 @@ pub(super) fn layout(model: &Model, input: &crate::plan::PlanInput, report: &mut
         card.physical_bytes, card.logical_bytes, crate::placement::reserve::gpu("muse_spark"),
         ArchContext::for_device("sm_120", card.physical_bytes).context_bytes)).collect::<Vec<_>>();
     budgets.extend((0..ranks).map(|rank| shared::spark_budget(rank as u8, opts.spark_capacity(rank))));
-    let pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-        &cards.iter().map(|card| card.physical_bytes).collect::<Vec<_>>(),
+    let card_bytes = cards.iter().map(|card| card.physical_bytes).collect::<Vec<_>>();
+    let mut pool_facts = crate::placement::PoolFacts::new(&card_bytes,
         crate::placement::planner::Context::resolve(context, (opts.context_tokens > 0).then_some(opts.context_tokens)),
-        opts.pool_tokens, shared::PAGE_ROWS));
+        opts.pool_tokens, shared::PAGE_ROWS);
+    pool_facts.target = opts.target_pool_tokens;
+    let pool = crate::placement::prepare_pool(pool_facts);
     let (total, available) = match crate::plan::layout::planner_host_memory(opts.host_memory, crate::plan::layout::HostMemorySample::Raw) {
         Ok(memory) => memory,
         Err(error) => { report.refuse_placement(format!("Muse host inventory refused: {error:#}"), "Provide a host memory sample."); return memory; }

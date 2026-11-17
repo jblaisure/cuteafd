@@ -2365,6 +2365,7 @@ fn sampled_preweight_replaces_census_context_once_and_preserves_capacity() {
                 reference.pool = pool;
                 let before = reference.admit(req.clone()).unwrap().solved;
                 let plan = live.prepare().unwrap().admit(req).unwrap().solved;
+                assert_eq!(plan.pool_policy, before.pool_policy);
                 assert_eq!(plan.pool_tokens, before.pool_tokens);
                 assert_eq!(plan.decisions, before.decisions);
                 for rank in 0..gpus {
@@ -2456,5 +2457,16 @@ fn prepared_pool_survives_policy_scope_and_matches_sampled_admission() {
                 &vec![96 << 30; gpus], exact.context, Some(default.solved.pool_tokens), if gpus == 2 { 128 } else { 64 }));
             assert_eq!(pinned.prepare().unwrap().admit(exact).unwrap().solved.pool_tokens, default.solved.pool_tokens);
         }
+    }
+}
+
+#[test]
+fn small_card_policy_facts_preserve_shared_default_and_explicit_target() {
+    for unit in [64, 128] {
+        let mut facts = crate::placement::PoolFacts::new(&[32 << 30],
+            crate::placement::planner::Context::automatic(262_144), None, unit);
+        assert_eq!(crate::placement::prepare_pool(facts).target(), 1 << 20);
+        facts.target = Some(3 << 20);
+        assert_eq!(crate::placement::prepare_pool(facts).target(), 3 << 20);
     }
 }

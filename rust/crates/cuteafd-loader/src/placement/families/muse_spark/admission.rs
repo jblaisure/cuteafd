@@ -1321,6 +1321,14 @@ mod contract_tests {
     }
 
     #[test]
+    fn small_card_pool_facts_do_not_inject_a_family_target() {
+        let mut facts = crate::placement::PoolFacts::new(&[32 << 30], Context::automatic(1 << 20), None, PAGE_ROWS);
+        assert_eq!(crate::placement::prepare_pool(facts).target(), 1 << 20);
+        facts.target = Some(3 << 20);
+        assert_eq!(crate::placement::prepare_pool(facts).target(), 3 << 20);
+    }
+
+    #[test]
     fn capped_sample_keeps_physical_occupied_bytes() {
         let budget = measured_budget(0, 96 << 30, 80 << 30, 2 << 30, 92 << 30);
         assert_eq!(budget.available().unwrap(), 74 << 30);

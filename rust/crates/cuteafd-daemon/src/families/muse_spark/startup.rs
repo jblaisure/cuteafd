@@ -297,8 +297,9 @@ mod tests {
                 partial_bf16_max_rows: cutoff_rows, partial_reply_formats: formats,
                 local: shared::local_workspace(input.expert_catalog()?, Some(&path), gpus, prefill.unit_rows)?,
                 drafter: served_drafter, media: None })
-            })?.placement;
-            let live = without_sampled_baseline(live, arch.context_bytes);
+            })?;
+            assert_eq!(report.phase_ledger.as_ref().context("solved ledger")?.pool_policy, live.solved.pool_policy);
+            let live = without_sampled_baseline(live.placement, arch.context_bytes);
             // Coordinator ledgers, item by item (then the whole placement).
             for gpu in 0..gpus {
                 assert_eq!(live.items[gpu], planned.items[gpu], "{label}: GPU {gpu} ledger");
@@ -379,8 +380,9 @@ mod tests {
                 partial_reply_formats: Default::default(),
                 local: shared::local_workspace(input.expert_catalog()?, Some(&path), gpus, prefill.unit_rows)?,
                 drafter: None, media: Some(shared::MediaOptions::from_checkpoint(checkpoint,
-                    vision, cuteafd_loader::plan::MediaMode::Off, 1)?) })?.placement;
-            let live = without_sampled_baseline(live, arch.context_bytes);
+                    vision, cuteafd_loader::plan::MediaMode::Off, 1)?) })?;
+            assert_eq!(report.phase_ledger.as_ref().context("solved ledger")?.pool_policy, live.solved.pool_policy);
+            let live = without_sampled_baseline(live.placement, arch.context_bytes);
             assert_eq!(live, planned, "{gpus} RTX + {sparks} Sparks");
             for gpu in 0..gpus {
                 let output = live.items[gpu].iter().find(|item| item.group == "Muse prefill logits");

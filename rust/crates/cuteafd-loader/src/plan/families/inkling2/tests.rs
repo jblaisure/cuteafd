@@ -669,6 +669,9 @@ fn shared_recipe_charges_every_owner_once_on_one_and_two_rtx() {
             assert!(contract.components.iter().any(|c| matches!(&c.kind, ComponentKind::Allocation { template, .. }
                 if template.id == format!("inkling2.cache.{gpu}.active"))), "rtx{gpu} marks");
         }
+        let small = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
+            &vec![32 << 30; gpus], inputs.context, None, inputs.page_rows()));
+        assert_eq!(small.target(), 1 << 20);
         let admitted = inputs.admit(request.clone()).unwrap();
         assert_eq!(admitted.solved.pool_policy, Some(inputs.pool));
         let mut sampled = inputs.clone();
