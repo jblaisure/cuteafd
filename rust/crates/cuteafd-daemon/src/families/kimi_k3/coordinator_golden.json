@@ -1,5 +1,7 @@
 {
   "global.0.embedding": "4a79cdabdab6826b994aff69d90a72aa35dae32e90f8acaf1ce312c7bdc4a487",
+  "global.0.output.norm": "582007975240ff40346b88582607814fdbcb18f4308055e1085819c6a0f35b36",
+  "global.0.output.score": "8b9817c2a0d285e355837be19fdce19cd059d1951671f78b2737431d92aac00d",
   "global.1.head.payload": "0f1e95a17856d356e4dd7a506df2e08ccaad780338d9639a8a7f52ed93c709fa",
   "global.1.head.suh": "2225f7ae3a80f15c0b33b2e5ec95c357850ce4793da4e04b3cf74923fbcb1f3d",
   "global.1.head.svh": "12a677f2881255b83f0471e54f96531d82f878a02ca832e4059d68e08f96e8b2",

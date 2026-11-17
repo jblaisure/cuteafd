@@ -2852,7 +2852,7 @@ pub(super) mod tests {
     fn global_weight_admission_rejects_duplicate_and_altered_inventory() -> Result<()> {
         let cfg = cfg();
         let mut admitted = admit(inputs(&cfg))?;
-        assert_eq!(admitted.global_layout(0)?.bytes()?, cfg.vocab_size * cfg.hidden * 2);
+        assert_eq!(admitted.global_layout(0)?.bytes()?, cfg.vocab_size * cfg.hidden * 2 + cfg.hidden * 6);
         assert_eq!(admitted.global_layout(1)?.bytes()?, cfg.vocab_size * cfg.hidden * 2 + cfg.hidden * 6);
         admitted.check_global(0, 0)?;
         admitted.check_global(1, 1)?;
