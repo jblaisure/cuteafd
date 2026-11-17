@@ -90,11 +90,14 @@ def test_inkling_bundled_drafter_defaults_on_and_honors_off(tmp_path: Path, sett
 @pytest.mark.parametrize("policy", ["simple", "simple-derived"])
 def test_inkling_accepts_shared_draft_policy_override(tmp_path: Path, policy: str) -> None:
     config = {"model_type": "inkling2", "text_config": {"num_hidden_layers": 48}}
-    keys = f"SPARK_COUNT=6\nRTX_GPUS=1\nSPECULATOR=dspark\nDRAFT_POLICY={policy}\nVISION=off\nAUDIO=off\n" + SIX
+    keys = f"SPARK_COUNT=6\nRTX_GPUS=1\nCONCURRENCY=16\nSPECULATOR=dspark\nDRAFT_POLICY={policy}\nDRAFT_KV_CACHE=fp8\nSPECULATION_TRACE={tmp_path}/inkling-trace.jsonl\nVISION=off\nAUDIO=off\n" + SIX
     result = _family_launch_result(tmp_path, config, "thinkingmachines/Inkling-2-Small-MXFP8", keys,
         physical_gpus=(0,), extra_args=("--wip", "inkling"), encoder_plan=PLANNED)
     serve = _line(result, "serve-inkling2 --snapshot")
     assert f"CUTEAFD_DRAFT_POLICY={policy}" in serve
+    assert f"CUTEAFD_SPECULATION_TRACE={tmp_path}/inkling-trace.jsonl" in serve
+    assert _flag(serve, "--max-sequences") == "16"
+    assert _flag(serve, "--draft-kv-cache") == "fp8"
 
 
 @pytest.mark.parametrize("cache", ["fp8", "bf16"])
