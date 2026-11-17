@@ -409,7 +409,8 @@ pub fn gather(request: &FactsRequest<'_>) -> Result<MiniMaxInputs, Refused> {
     let mut pool_facts = crate::placement::PoolFacts::new(&capacities,
         Context::resolve(context, (request.context_tokens > 0).then_some(request.context_tokens)), request.pool_tokens, shared::PAGE_ROWS);
     pool_facts.target = request.target_pool_tokens;
-    let pool = crate::placement::prepare_pool(pool_facts);
+    let pool = crate::placement::prepare_pool(pool_facts).map_err(|error|
+        refused(format!("invalid KV pool policy: {error}"), "Set KV min <= target <= max."))?;
     Ok(MiniMaxInputs { cfg: cfg.clone(), gpus, attention, split_wire: request.split_wire, spark_ranks: ranks,
         context: Context::resolve(context, (request.context_tokens > 0).then_some(request.context_tokens)),
         pool, prefill: shape, sequences: request.sequences, targets, owners,

@@ -165,7 +165,13 @@ pub(super) fn layout(model: &Model, input: &crate::plan::PlanInput, report: &mut
         crate::placement::planner::Context::resolve(context, (opts.context_tokens > 0).then_some(opts.context_tokens)),
         opts.pool_tokens, shared::PAGE_ROWS);
     pool_facts.target = opts.target_pool_tokens;
-    let pool = crate::placement::prepare_pool(pool_facts);
+    let pool = match crate::placement::prepare_pool(pool_facts) {
+        Ok(pool) => pool,
+        Err(error) => {
+            report.refuse_placement(format!("invalid KV pool policy: {error}"), "Set KV min <= target <= max.");
+            return memory;
+        }
+    };
     let (total, available) = match crate::plan::layout::planner_host_memory(opts.host_memory, crate::plan::layout::HostMemorySample::Raw) {
         Ok(memory) => memory,
         Err(error) => { report.refuse_placement(format!("Muse host inventory refused: {error:#}"), "Provide a host memory sample."); return memory; }

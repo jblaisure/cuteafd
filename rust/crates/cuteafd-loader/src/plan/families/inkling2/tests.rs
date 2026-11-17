@@ -554,7 +554,7 @@ fn shared_recipe_charges_every_owner_once_on_one_and_two_rtx() {
         }).collect() };
         let inputs = InklingInputs { cfg: cfg.clone(), kv_format: crate::families::inkling2::InklingKvCache::Bf16, gpus, spark_ranks: ranks, context: Context::automatic(1 << 20),
             pool: crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![96 << 30; gpus], Context::automatic(1 << 20), None, shared::PAGE_ROWS)), prefill, sequences: 16, prefix_entries: 8, prefix_mark_budget: 2 << 30, targets: targets.clone(), placement, modes: modes.clone(),
+            &vec![96 << 30; gpus], Context::automatic(1 << 20), None, shared::PAGE_ROWS)).unwrap(), prefill, sequences: 16, prefix_entries: 8, prefix_mark_budget: 2 << 30, targets: targets.clone(), placement, modes: modes.clone(),
             routed: routed.clone(), experts,
             local,
             spark: (0..=routed.len()).map(charge).collect(),
@@ -670,7 +670,7 @@ fn shared_recipe_charges_every_owner_once_on_one_and_two_rtx() {
                 if template.id == format!("inkling2.cache.{gpu}.active"))), "rtx{gpu} marks");
         }
         let small = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-            &vec![32 << 30; gpus], inputs.context, None, inputs.page_rows()));
+            &vec![32 << 30; gpus], inputs.context, None, inputs.page_rows())).unwrap();
         assert_eq!(small.target(), 1 << 20);
         let admitted = inputs.admit(request.clone()).unwrap();
         assert_eq!(admitted.solved.pool_policy, Some(inputs.pool));
@@ -686,7 +686,7 @@ fn shared_recipe_charges_every_owner_once_on_one_and_two_rtx() {
         let grown = grow.scoped(|| {
             let mut growing = inputs.clone();
             growing.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-                &vec![96 << 30; gpus], inputs.context, None, inputs.page_rows()));
+                &vec![96 << 30; gpus], inputs.context, None, inputs.page_rows())).unwrap();
             growing.admit(request.clone()).unwrap()
         });
         assert_eq!(grown.onboard, admitted.onboard, "growth must preserve Inkling onboarding");
@@ -695,7 +695,7 @@ fn shared_recipe_charges_every_owner_once_on_one_and_two_rtx() {
         let explicit = grow.scoped(|| {
             let mut pinned = inputs.clone();
             pinned.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-                &vec![96 << 30; gpus], inputs.context, Some(admitted.solved.pool_tokens), inputs.page_rows()));
+                &vec![96 << 30; gpus], inputs.context, Some(admitted.solved.pool_tokens), inputs.page_rows())).unwrap();
             let mut exact = request.clone();
             exact.pool = crate::placement::planner::Pin::Exact(admitted.solved.pool_tokens);
             pinned.admit(exact).unwrap()

@@ -296,7 +296,8 @@ pub fn gather(request: &FactsRequest<'_>) -> Result<InklingInputs, Refused> {
     let mut pool_facts = crate::placement::PoolFacts::new(&capacities,
         Context::resolve(context, (request.context_tokens > 0).then_some(request.context_tokens)), request.pool_tokens, page_rows);
     pool_facts.target = request.target_pool_tokens;
-    let pool = crate::placement::prepare_pool(pool_facts);
+    let pool = crate::placement::prepare_pool(pool_facts).map_err(|error|
+        refused(format!("invalid KV pool policy: {error}"), "Set KV min <= target <= max."))?;
     let vision = crate::placement::still_encoder::StillEncoder::planned(request.checkpoint,
         request.vision, request.vision_replicas, &budgets, request.media_cache_bytes.unwrap_or(256 << 20))
         .map_err(|error| refused(format!("Inkling vision inventory refused: {error:#}"), "Provide the bundled PE tensors."))?;

@@ -41,7 +41,7 @@ fn production_input(cfg: &GlmDsaConfig, gpus: usize, ranks: usize, prefill: Pref
             headroom: 0 });
     }
     ProductionInput { expert_usage: false, cfg, layers: cfg.layers, context: 4096, pool: crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-        &vec![96 << 30; gpus], 4096, Some(4096), if gpus == 2 { 128 } else { 64 })),
+        &vec![96 << 30; gpus], 4096, Some(4096), if gpus == 2 { 128 } else { 64 })).unwrap(),
         attention: if gpus == 2 { AttentionPlacement::Context } else { AttentionPlacement::Heads },
         gpus, prefill, blas_head: serving::BlasHead::TensorLt, blas: vec![],
         target: TargetFacts {
@@ -2361,7 +2361,7 @@ fn sampled_preweight_replaces_census_context_once_and_preserves_capacity() {
                 }
                 let mut req = request(); req.pool = Pin::Auto;
                 let pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-                    &vec![96 << 30; gpus], req.context, None, if gpus == 2 { 128 } else { 64 }));
+                    &vec![96 << 30; gpus], req.context, None, if gpus == 2 { 128 } else { 64 })).unwrap();
                 live.pool = pool;
                 reference.pool = pool;
                 let before = reference.admit(req.clone()).unwrap().solved;
@@ -2433,7 +2433,7 @@ fn prepared_pool_survives_policy_scope_and_matches_sampled_admission() {
             let make = || {
                 let mut input = production_input(&cfg, gpus, 4, PrefillShape { rows: 128, waves: 3 });
                 input.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-                    &vec![96 << 30; gpus], req.context, None, if gpus == 2 { 128 } else { 64 }));
+                    &vec![96 << 30; gpus], req.context, None, if gpus == 2 { 128 } else { 64 })).unwrap();
                 input.prepare().unwrap()
             };
             let default = MemoryPolicy::default().scoped(make).admit(req.clone()).unwrap();
@@ -2455,7 +2455,7 @@ fn prepared_pool_survives_policy_scope_and_matches_sampled_admission() {
             exact.pool = Pin::Exact(default.solved.pool_tokens);
             let mut pinned = production_input(&cfg, gpus, 4, PrefillShape { rows: 128, waves: 3 });
             pinned.pool = crate::placement::prepare_pool(crate::placement::PoolFacts::new(
-                &vec![96 << 30; gpus], exact.context, Some(default.solved.pool_tokens), if gpus == 2 { 128 } else { 64 }));
+                &vec![96 << 30; gpus], exact.context, Some(default.solved.pool_tokens), if gpus == 2 { 128 } else { 64 })).unwrap();
             assert_eq!(pinned.prepare().unwrap().admit(exact).unwrap().solved.pool_tokens, default.solved.pool_tokens);
         }
     }
@@ -2466,8 +2466,8 @@ fn small_card_policy_facts_preserve_shared_default_and_explicit_target() {
     for unit in [64, 128] {
         let mut facts = crate::placement::PoolFacts::new(&[32 << 30],
             crate::placement::planner::Context::automatic(262_144), None, unit);
-        assert_eq!(crate::placement::prepare_pool(facts).target(), 1 << 20);
+        assert_eq!(crate::placement::prepare_pool(facts).unwrap().target(), 1 << 20);
         facts.target = Some(3 << 20);
-        assert_eq!(crate::placement::prepare_pool(facts).target(), 3 << 20);
+        assert_eq!(crate::placement::prepare_pool(facts).unwrap().target(), 3 << 20);
     }
 }

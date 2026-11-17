@@ -521,7 +521,7 @@ fn placement(report: &PlanReport, input: &crate::plan::PlanInput, options: &Layo
         crate::placement::planner::Context::resolve(context, (options.context_tokens > 0).then_some(options.context_tokens)),
         options.pool_tokens, page_tokens);
     pool_facts.target = options.target_pool_tokens;
-    let pool = crate::placement::prepare_pool(pool_facts);
+    let pool = crate::placement::prepare_pool(pool_facts)?;
     let maximum_pages = pool.maximum_tokens().div_ceil(page_tokens);
     let prefill = PrefillShape { rows, waves: lanes };
     let operation = Operation::Serving;
@@ -711,7 +711,7 @@ pub(crate) fn native_layout_with_metadata(checkpoint: &Checkpoint, options: &Lay
         crate::placement::planner::Context::resolve(context, (options.context_tokens > 0).then_some(options.context_tokens)),
         options.pool_tokens, page_tokens);
     pool_facts.target = options.target_pool_tokens;
-    let pool = crate::placement::prepare_pool(pool_facts);
+    let pool = crate::placement::prepare_pool(pool_facts)?;
     let maximum_pages = pool.maximum_tokens().div_ceil(page_tokens);
     let (draft, mut additional, prefix_quota) = production_serving(options, checkpoint, &cfg,
         context, attention, gpu_count, maximum_pages)?;

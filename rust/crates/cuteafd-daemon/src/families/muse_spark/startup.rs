@@ -91,7 +91,7 @@ pub(crate) fn admit(options: Options<'_>) -> Result<shared::AdmittedMuse> {
     let capacities = options.measured.iter().map(|sample| sample.total_bytes).collect::<Vec<_>>();
     let pool = cuteafd_loader::placement::prepare_pool(cuteafd_loader::placement::PoolFacts::new(
         &capacities, cuteafd_loader::placement::planner::Context::resolve(context, options.max_context),
-        options.pool_tokens, shared::PAGE_ROWS));
+        options.pool_tokens, shared::PAGE_ROWS))?;
     let media = options.media.unwrap_or(shared::MediaOptions { vision: cuteafd_loader::plan::MediaMode::Off,
         audio: cuteafd_loader::plan::MediaMode::Off, replicas: 1, vision_bytes: (0, 0), audio_bytes: (0, 0) });
     let prepared = shared::ProductionInput { kv_cache: options.kv_cache, cfg: options.cfg, core: options.core, projections: options.projections,

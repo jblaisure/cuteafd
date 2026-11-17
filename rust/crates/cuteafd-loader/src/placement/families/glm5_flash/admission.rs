@@ -687,7 +687,8 @@ fn prepare_fixed<'a>(i: &'a GlmfInputs<'a>, sms: usize, rtx_experts: bool, proce
     let capacities = i.gpus.iter().map(|gpu| gpu.0).collect::<Vec<_>>();
     let mut pool_facts = crate::placement::PoolFacts::new(&capacities, i.context, i.requested_pool, 256);
     pool_facts.target = i.target_pool_tokens;
-    let pool = crate::placement::prepare_pool(pool_facts);
+    let pool = crate::placement::prepare_pool(pool_facts)
+        .map_err(|error| p::Refusal::InvalidFact(error.to_string()))?;
     let maximum = pool.maximum_tokens().div_ceil(256);
     let attention = modes(i);
     let routed: Vec<_> = (0..i.layers).filter(|&layer| !i.cfg.dense[layer]).collect();

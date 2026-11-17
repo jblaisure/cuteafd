@@ -1188,7 +1188,7 @@ impl Opened {
         let requested_pool = cuteafd_loader::placement::PoolPolicy::normalize_request(Some(args.pool_tokens as u64));
         let pool = cuteafd_loader::placement::prepare_pool(cuteafd_loader::placement::PoolFacts::new(
             &cards.iter().map(|&(_, logical)| logical).collect::<Vec<_>>(), *serving_context,
-            requested_pool, page_tokens));
+            requested_pool, page_tokens))?;
         let maximum_pages = pool.maximum_tokens().div_ceil(page_tokens);
         let prefill = PrefillShape { rows: args.prefill_rows as u64, waves: prefill_lanes as u64 };
         let operation = Operation::Serving;
