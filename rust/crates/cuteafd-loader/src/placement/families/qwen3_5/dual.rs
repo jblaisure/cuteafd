@@ -29,7 +29,7 @@ pub fn admit_dual(request: Request, budgets: Vec<Budget>, facts: DenseFacts<'_>)
     let mut pool_facts = crate::placement::PoolFacts::new(&cards, request.context, requested, PAGE_ROWS);
     pool_facts.encoding_limit = Some(if facts.drafter.is_some() { i32::MAX as u64 } else { u32::MAX as u64 });
     pool_facts.target = facts.target_pool;
-    let pool = crate::placement::prepare_pool(pool_facts);
+    let pool = crate::placement::prepare_pool(pool_facts).map_err(|error| Refusal::InvalidFact(error.to_string()))?;
     let groups = vec![(true, None); facts.cfg.attention.len()];
     let mut best: Option<((u64, std::cmp::Reverse<u64>), DualAdmission)> = None;
     let mut failure = None;

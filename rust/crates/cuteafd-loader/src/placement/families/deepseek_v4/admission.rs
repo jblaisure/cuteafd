@@ -327,7 +327,7 @@ pub fn prepare(inputs: &V4Inputs) -> Result<PreparedV4<'_>, Refusal> {
         inputs.requested_pool, page_rows);
     facts.encoding_limit = Some(super::POOL_CEILING_TOKENS);
     facts.target = inputs.target_pool;
-    let pool = crate::placement::prepare_pool(facts);
+    let pool = crate::placement::prepare_pool(facts).map_err(|error| Refusal::InvalidFact(error.to_string()))?;
     let maximum_tokens = pool.maximum_tokens().max(context);
     let maximum_pages = maximum_tokens.div_ceil(page_rows).max(1);
     let prefix = match &inputs.host {

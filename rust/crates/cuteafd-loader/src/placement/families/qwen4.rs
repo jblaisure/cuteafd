@@ -230,7 +230,7 @@ impl<'a> QwenSingle<'a> {
         let cards = [inputs.capacity_bytes];
         let mut facts = PoolFacts::new(&cards, inputs.context, requested, page);
         facts.target = inputs.target_pool;
-        let pool = prepare_pool(facts);
+        let pool = prepare_pool(facts).map_err(|error| Refusal::InvalidFact(error.to_string()))?;
         let context = pool.compiled_context();
         let maximum_pages = pool.maximum_tokens().max(pool.floor()).div_ceil(page);
         if pool.floor() == 0 || maximum_pages == 0 || maximum_pages == u64::MAX {
@@ -905,7 +905,7 @@ impl<'a> QwenDual<'a> {
         let cards = inputs.gpus.map(|gpu| gpu.capacity_bytes);
         let mut facts = PoolFacts::new(&cards, inputs.context, requested, page);
         facts.target = inputs.target_pool;
-        let policy = prepare_pool(facts);
+        let policy = prepare_pool(facts).map_err(|error| Refusal::InvalidFact(error.to_string()))?;
         let maximum_pages = policy.maximum_tokens().max(policy.floor()).div_ceil(page);
         if maximum_pages == 0 || maximum_pages == u64::MAX || policy.floor() == 0 {
             return Err(Refusal::InvalidFact("invalid Qwen dual pool extent".into()));
