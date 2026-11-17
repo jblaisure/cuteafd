@@ -907,10 +907,7 @@ impl<'a> KimiResidual<'a> {
         if !(2..=9).contains(&candidates) { return Err(KimiW8Error::Invalid("stream candidates")); }
         let program = programs.program(&format!("kimik3_attn_res_stream_c{candidates}"),
             &["arena", "delta", "score_weight", "norm_weight", "out"])?;
-        validate_residual_manifest(program.spec(), site)?;
-        if program.spec().geometry["capture_stream"].as_bool() != Some(true) {
-            return Err(KimiW8Error::Invalid("pre-norm stream manifest"));
-        }
+        validate_residual_stream_manifest(program.spec(), site)?;
         let rows = program.spec().capacity_rows as usize;
         Ok(Self { program, rows })
     }
@@ -1582,6 +1579,19 @@ fn validate_w8_manifest(spec: &ProgramSpec, scalars: &[u8]) -> W8Result<()> {
     Ok(())
 }
 fn validate_residual_manifest(spec: &ProgramSpec, site: KimiResidualSite) -> W8Result<()> {
+    if spec.geometry["capture_stream"].as_bool().unwrap_or(false) {
+        return Err(KimiW8Error::Invalid("target residual manifest is a draft stream"));
+    }
+    validate_residual_geometry(spec, site)
+}
+fn validate_residual_stream_manifest(spec: &ProgramSpec, site: KimiResidualSite) -> W8Result<()> {
+    if spec.geometry["capture_stream"].as_bool() != Some(true)
+        || !(2..=9).contains(&site.candidates) || site.prefix != KimiPrefixMode::Add || site.append {
+        return Err(KimiW8Error::Invalid("pre-norm stream manifest"));
+    }
+    validate_residual_geometry(spec, site)
+}
+fn validate_residual_geometry(spec: &ProgramSpec, site: KimiResidualSite) -> W8Result<()> {
     validate_w8_manifest(spec, b"iif")?;
     let g = &spec.geometry;
     if !site.valid() || g["hidden"].as_u64() != Some(7168)
@@ -2230,6 +2240,23 @@ mod tests {
             geometry: serde_json::json!({"hidden": 7168, "candidates": site.candidates,
                 "prefix_mode": site.prefix.name(), "append": site.append,
                 "has_mix": site.candidates != 1}) }
+    }
+
+    #[test]
+    fn draft_stream_and_mutating_target_manifests_cannot_be_interchanged() {
+        for candidates in 2..=9 {
+            let site = KimiResidualSite { candidates, prefix: KimiPrefixMode::Add, append: false };
+            let mut spec = residual_spec(site);
+            assert!(validate_residual_manifest(&spec, site).is_ok());
+            assert!(validate_residual_stream_manifest(&spec, site).is_err());
+            spec.geometry["capture_stream"] = true.into();
+            assert!(validate_residual_stream_manifest(&spec, site).is_ok());
+            assert!(validate_residual_manifest(&spec, site).is_err());
+            for wrong in [KimiResidualSite { prefix: KimiPrefixMode::Keep, ..site },
+                KimiResidualSite { append: true, ..site }] {
+                assert!(validate_residual_stream_manifest(&spec, wrong).is_err());
+            }
+        }
     }
 
     #[test]
