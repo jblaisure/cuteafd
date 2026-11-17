@@ -1883,6 +1883,9 @@ mod tests {
         let solved = QwenSingle::new(&inputs).unwrap().admit().unwrap();
         assert_eq!(solved.pool_policy.unwrap().target(), 524_288);
         assert_eq!(solved.pool_tokens, 524_288);
+        inputs.target_pool = None;
+        inputs.physical_bytes = vec![crate::placement::inventory::PRO_TOTAL_BYTES];
+        assert_eq!(QwenSingle::new(&inputs).unwrap().admit().unwrap().pool_policy.unwrap().target(), 2 << 20);
     }
 
     /// The header-only planner reserves Spark return planes beside a planned

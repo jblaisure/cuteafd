@@ -582,6 +582,12 @@ impl Opened {
         context_args.max_context = crate::shared::context::checkpoint_context(
             &args.snapshot, &args.manifest, "qwen4", args.max_context)?;
         let args = &context_args;
+        let context = cuteafd_loader::placement::planner::Context::resolve(args.max_context as u64, requested_context);
+        if args.pool_tokens > 0 && (args.pool_tokens as u64) < context.required() {
+            return Err(cuteafd_loader::placement::PlacementError::RequestedBelowContext {
+                requested: args.pool_tokens as u64, floor: context.required(),
+            }.into());
+        }
         if let Some(peer) = args.split_device {
             return self.with_dual_engine(args, peer, cuteafd_loader::placement::planner::Context::resolve(args.max_context as u64, requested_context), media, body);
         }

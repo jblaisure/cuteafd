@@ -91,7 +91,8 @@ impl Opened {
         let host = admission::host_owners(args, &self.cfg, layers, mtp, 2, sparks, self.checkpoint.spark_input_is_bf16(),
             ple_info.map(|(row_bytes, _)| row_bytes), host_embedding,
             push_envelopes)?;
-        let (placement, solved) = qwen4::dual_admitted(&qwen4::QwenDualInputs { physical_bytes: inventory.gpus.iter().map(|sample| sample.total_bytes).collect(), target_pool: None,
+        let (placement, solved) = qwen4::dual_admitted(&qwen4::QwenDualInputs { physical_bytes: inventory.gpus.iter().map(|sample| sample.physical_bytes
+            .context("fresh Qwen dual inventory lacks physical card identity")).collect::<Result<Vec<_>>>()?, target_pool: None,
         experts: Some(experts.clone()), blas_head: crate::shared::target_head::TargetHead::configured().blas_head(!args.mtp_fp8_head),
         resident_weight_limit: Some(crate::shared::memory::budget::resident_weight_limit()), context,
             owner_manifests: manifests.each_ref().map(Some),

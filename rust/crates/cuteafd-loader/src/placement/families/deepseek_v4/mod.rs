@@ -503,6 +503,10 @@ mod default_tests {
         let selected = prepare(&input).unwrap().admit(production_request(&input)).unwrap();
         assert_eq!(selected.solved.pool_policy.unwrap().target(), 524_288);
         assert_eq!(selected.solved.pool_tokens, 524_288);
+        input.target_pool = None;
+        input.physical_bytes = vec![crate::placement::inventory::PRO_TOTAL_BYTES; 2];
+        assert_eq!(prepare(&input).unwrap().admit(production_request(&input)).unwrap()
+            .solved.pool_policy.unwrap().target(), 2 << 20);
     }
 
     /// The graph arena is exactly one canonical `graph reserve` owner per

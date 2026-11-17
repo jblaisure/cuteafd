@@ -174,6 +174,7 @@ pub(super) fn preallocate(library: &NativeLibrary, args: &EngineArgs,
         &manifest.map(|m| cuteafd_loader::placement::ProgramSet::from_manifest(m, &["qwen4"]))
             .unwrap_or_else(|| cuteafd_loader::placement::ProgramSet::from_names(&["qwen4"], [])))?;
     let mut inputs = placement_inputs(args, admission, sparks, (sample.free_bytes, sample.total_bytes), pending, context, host);
+    inputs.physical_bytes = vec![sample.physical_bytes.context("fresh Qwen inventory lacks physical card identity")?];
     inputs.experts = experts;
     inputs.onboard = args.onboard.map(|setting| setting.resolve(layers)).unwrap_or_default();
     inputs.arenas = arenas;
