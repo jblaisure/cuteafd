@@ -797,7 +797,8 @@ fn recipe_inputs(gpus: usize, ranks: usize) -> crate::placement::families::minim
     let mut release = cfg.clone(); release.experts = 128;
     MiniMaxInputs { cfg: release, gpus, split_wire: Some(crate::families::minimax_m3::execution::WirePrecision::Bf16), attention: if gpus == 2 { crate::placement::AttentionPlacement::Layers }
         else { crate::placement::AttentionPlacement::Heads }, spark_ranks: ranks, context: Context::automatic(1 << 20),
-        maximum_pool_tokens: 4 << 20, prefill, sequences: 16, targets: targets.clone(), owners: owners.clone(),
+        pool: crate::placement::prepare_pool(crate::placement::PoolFacts::new(
+            &vec![96 << 30; gpus], Context::automatic(1 << 20), None, shared::PAGE_ROWS)), prefill, sequences: 16, targets: targets.clone(), owners: owners.clone(),
         manifest, routed: routed.clone(),
         expert_backings: (0..=routed.len()).map(|count| if count == 0 { Vec::new() } else {
             let catalog = crate::read_expert_catalog(dir.path()).unwrap();

@@ -40,7 +40,8 @@ fn production_input(cfg: &GlmDsaConfig, gpus: usize, ranks: usize, prefill: Pref
             baseline: Baseline::Forecast { occupied: 0, source: "test physical witness".into(), assumed: false },
             headroom: 0 });
     }
-    ProductionInput { expert_usage: false, cfg, layers: cfg.layers, context: 4096, maximum_pool_tokens: 8192,
+    ProductionInput { expert_usage: false, cfg, layers: cfg.layers, context: 4096, pool: crate::placement::prepare_pool(crate::placement::PoolFacts::new(
+        &vec![96 << 30; gpus], 4096, None, if gpus == 2 { 128 } else { 64 })),
         attention: if gpus == 2 { AttentionPlacement::Context } else { AttentionPlacement::Heads },
         gpus, prefill, blas_head: serving::BlasHead::TensorLt, blas: vec![],
         target: TargetFacts {
