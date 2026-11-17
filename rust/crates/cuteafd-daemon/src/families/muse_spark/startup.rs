@@ -31,7 +31,6 @@ pub(crate) fn preflight_with_format(manifest: &Path, gpus: usize,
 /// Startup's measured view of each coordinator GPU, sampled before weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Measured {
-    pub physical_bytes: u64,
     pub total_bytes: u64,
     pub free_bytes: u64,
     /// Code already resident at the sample (CUDA used minus tracked allocations).
@@ -89,7 +88,7 @@ pub(crate) fn admit(options: Options<'_>) -> Result<shared::AdmittedMuse> {
     ensure!(options.spark_rank_bytes.len() >= options.spark_ranks, "missing Muse Spark capacity");
     budgets.extend((0..options.spark_ranks).map(|rank| shared::spark_budget(rank as u8, options.spark_rank_bytes[rank])));
     let context = options.max_context.unwrap_or(options.cfg.max_position as u64);
-    let capacities = options.measured.iter().map(|sample| sample.physical_bytes).collect::<Vec<_>>();
+    let capacities = options.measured.iter().map(|sample| sample.total_bytes).collect::<Vec<_>>();
     let pool = cuteafd_loader::placement::prepare_pool(cuteafd_loader::placement::PoolFacts::new(
         &capacities, cuteafd_loader::placement::planner::Context::resolve(context, options.max_context),
         options.pool_tokens, shared::PAGE_ROWS));
@@ -286,7 +285,7 @@ mod tests {
                 manifest: &preflight(&path, gpus)?,
                 projections: cuteafd_loader::families::muse_spark::weight_layout::projections(&cfg, &core,
                     gpus, prefill.unit_rows as usize)?,
-                measured: vec![Measured { physical_bytes: total, total_bytes: total, free_bytes: total - arch.context_bytes,
+                measured: vec![Measured { total_bytes: total, free_bytes: total - arch.context_bytes,
                     untracked_bytes: arch.context_bytes }; gpus],
 
                 headroom_bytes: cuteafd_loader::placement::reserve::gpu("muse_spark"), spark_ranks: sparks, prefill, slots: 16,
@@ -367,7 +366,7 @@ mod tests {
                 manifest: &inventory,
                 projections: cuteafd_loader::families::muse_spark::weight_layout::projections(&cfg, &core,
                     gpus, prefill.unit_rows as usize)?,
-                measured: vec![Measured { physical_bytes: total, total_bytes: total, free_bytes: total - arch.context_bytes,
+                measured: vec![Measured { total_bytes: total, free_bytes: total - arch.context_bytes,
                     untracked_bytes: arch.context_bytes }; gpus],
 
                 headroom_bytes: cuteafd_loader::placement::reserve::gpu("muse_spark"), spark_ranks: sparks, prefill, slots: 16,
@@ -415,7 +414,7 @@ mod tests {
                     manifest: &inventory,
                 projections: cuteafd_loader::families::muse_spark::weight_layout::projections(&cfg, &core,
                     gpus, prefill.unit_rows as usize)?,
-                    measured: vec![Measured { physical_bytes: total, total_bytes: total, free_bytes: total - arch.context_bytes,
+                    measured: vec![Measured { total_bytes: total, free_bytes: total - arch.context_bytes,
                         untracked_bytes: arch.context_bytes }; gpus],
 
                     headroom_bytes: cuteafd_loader::placement::reserve::gpu("muse_spark"), spark_ranks: sparks, prefill, slots: 16,
@@ -493,7 +492,7 @@ mod tests {
             manifest: &preflight(&path, gpus)?,
                 projections: cuteafd_loader::families::muse_spark::weight_layout::projections(&cfg, &core,
                     gpus, prefill.unit_rows as usize)?,
-            measured: vec![Measured { physical_bytes: total, total_bytes: total, free_bytes: total - arch.context_bytes,
+            measured: vec![Measured { total_bytes: total, free_bytes: total - arch.context_bytes,
                 untracked_bytes: arch.context_bytes }; gpus],
 
             headroom_bytes: cuteafd_loader::placement::reserve::gpu("muse_spark"), spark_ranks: sparks, prefill, slots: 16,

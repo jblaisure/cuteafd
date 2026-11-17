@@ -405,8 +405,8 @@ pub fn gather(request: &FactsRequest<'_>) -> Result<MiniMaxInputs, Refused> {
             geometry.chunk_bytes()).unwrap_or(0);
         serving::HostPrefixOwners { quota_bytes: quota, chunk_bytes: geometry.chunk_bytes().min(quota.max(1)) }
     };
-    let physical = (0..gpus).map(|gpu| request.coordinator.physical(gpu)).collect::<Vec<_>>();
-    let mut pool_facts = crate::placement::PoolFacts::new(&physical,
+    let capacities = (0..gpus).map(|gpu| request.coordinator.budget(gpu).logical_bytes).collect::<Vec<_>>();
+    let mut pool_facts = crate::placement::PoolFacts::new(&capacities,
         Context::resolve(context, (request.context_tokens > 0).then_some(request.context_tokens)), request.pool_tokens, shared::PAGE_ROWS);
     pool_facts.target = request.target_pool_tokens;
     let pool = crate::placement::prepare_pool(pool_facts);

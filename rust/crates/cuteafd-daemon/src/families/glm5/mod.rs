@@ -1187,7 +1187,7 @@ impl Opened {
         let page_tokens = if attention == cuteafd_loader::placement::AttentionPlacement::Context { 128 } else { 64 };
         let requested_pool = cuteafd_loader::placement::PoolPolicy::normalize_request(Some(args.pool_tokens as u64));
         let pool = cuteafd_loader::placement::prepare_pool(cuteafd_loader::placement::PoolFacts::new(
-            &cards.iter().map(|&(physical, _)| physical).collect::<Vec<_>>(), *serving_context,
+            &cards.iter().map(|&(_, logical)| logical).collect::<Vec<_>>(), *serving_context,
             requested_pool, page_tokens));
         let maximum_pages = pool.maximum_tokens().div_ceil(page_tokens);
         let prefill = PrefillShape { rows: args.prefill_rows as u64, waves: prefill_lanes as u64 };

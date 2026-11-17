@@ -292,8 +292,8 @@ pub fn gather(request: &FactsRequest<'_>) -> Result<InklingInputs, Refused> {
         super::weight_layout::push_host_envelope(&catalog, backings, gpus).map(Some)
     }).collect::<anyhow::Result<Vec<_>>>().map_err(|error| refused(format!("Inkling push host inventory refused: {error:#}"),
         "Provide complete native push source/descriptor headers."))?;
-    let physical = (0..gpus).map(|gpu| request.coordinator.physical(gpu)).collect::<Vec<_>>();
-    let mut pool_facts = crate::placement::PoolFacts::new(&physical,
+    let capacities = (0..gpus).map(|gpu| request.coordinator.budget(gpu).logical_bytes).collect::<Vec<_>>();
+    let mut pool_facts = crate::placement::PoolFacts::new(&capacities,
         Context::resolve(context, (request.context_tokens > 0).then_some(request.context_tokens)), request.pool_tokens, page_rows);
     pool_facts.target = request.target_pool_tokens;
     let pool = crate::placement::prepare_pool(pool_facts);
