@@ -31,6 +31,7 @@ const fn gib(hundredths: u64) -> u64 { hundredths * (1 << 30) / 100 }
 /// checkpoint, the program manifest and the CLI.
 #[derive(Debug, Clone)]
 pub struct V4Inputs {
+    pub target_pool: Option<u64>,
     pub expert_usage: bool,
     pub resident_weight_limit: Option<ResidentWeights>,
     pub spark_reply_format: cuteafd_core::SparkReplyFormat,
@@ -360,7 +361,7 @@ mod default_tests {
             cfg.n_heads = heads;
             cfg.index_topk = topk;
             for gpus in [1, 2] {
-                let mut input = V4Inputs {
+                let mut input = V4Inputs { target_pool: None,
                     expert_usage: false, resident_weight_limit: None,
                     spark_reply_format: cuteafd_core::SparkReplyFormat::Bf16, serving_context: crate::placement::planner::Context::pinned(262_144),
                     cfg: cfg.clone(), weights: test_weights(gpus),
@@ -440,7 +441,7 @@ mod default_tests {
     }
 
     fn plan_inputs(cfg: &DeepseekV4Config) -> V4Inputs {
-        V4Inputs {
+        V4Inputs { target_pool: None,
             expert_usage: false, resident_weight_limit: None, spark_reply_format: cuteafd_core::SparkReplyFormat::Bf16,
             serving_context: crate::placement::planner::Context::pinned(262_144), cfg: cfg.clone(),
             weights: test_weights(2),
@@ -488,6 +489,20 @@ mod default_tests {
             let strict = prepare(&input).unwrap().admit(production_request(&input)).unwrap();
             assert_eq!(strict.solved.pool_tokens, 262_144);
         });
+    }
+
+    #[test]
+    fn small_card_pool_defaults_and_supplied_target_are_shared_facts() {
+        let mut input = plan_inputs(&context_cfg());
+        input.requested_pool = None;
+        input.gpus = vec![(32 << 30, Baseline::Planned { context_bytes: 0, loaded_bytes: 0 }); 2];
+        input.attention = Some(AttentionPlacement::Heads);
+        let default = prepare(&input).unwrap().admit(production_request(&input)).unwrap();
+        assert_eq!(default.solved.pool_policy.unwrap().target(), 1 << 20);
+        input.target_pool = Some(524_288);
+        let selected = prepare(&input).unwrap().admit(production_request(&input)).unwrap();
+        assert_eq!(selected.solved.pool_policy.unwrap().target(), 524_288);
+        assert_eq!(selected.solved.pool_tokens, 524_288);
     }
 
     /// The graph arena is exactly one canonical `graph reserve` owner per

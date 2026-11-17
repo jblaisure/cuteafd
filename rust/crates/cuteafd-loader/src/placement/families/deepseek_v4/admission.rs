@@ -326,6 +326,7 @@ pub fn prepare(inputs: &V4Inputs) -> Result<PreparedV4<'_>, Refusal> {
     let mut facts = crate::placement::PoolFacts::new(&cards, inputs.serving_context,
         inputs.requested_pool, page_rows);
     facts.encoding_limit = Some(super::POOL_CEILING_TOKENS);
+    facts.target = inputs.target_pool;
     let pool = crate::placement::prepare_pool(facts);
     let maximum_tokens = pool.maximum_tokens().max(context);
     let maximum_pages = maximum_tokens.div_ceil(page_rows).max(1);

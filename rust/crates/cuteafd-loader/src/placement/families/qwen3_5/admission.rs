@@ -28,6 +28,7 @@ impl ServingFacts {
 
 #[derive(Clone)]
 pub struct DenseFacts<'a> {
+    pub target_pool: Option<u64>,
     pub cfg: &'a Qwen35Config,
     pub graph_variant: String,
     pub graphs_enabled: bool,
@@ -113,6 +114,7 @@ pub fn admit(request: Request, mut budgets: Vec<Budget>, facts: DenseFacts<'_>)
     let requested = match request.pool { Pin::Auto => None, Pin::Exact(tokens) => Some(tokens) };
     let mut pool_facts = crate::placement::PoolFacts::new(&cards, request.context, requested, PAGE_ROWS);
     pool_facts.encoding_limit = Some(if facts.drafter.is_some() { i32::MAX as u64 } else { u32::MAX as u64 });
+    pool_facts.target = facts.target_pool;
     let pool = crate::placement::prepare_pool(pool_facts);
     let contract = facts.prepare(&request)?;
     admit_contract(request, std::mem::take(&mut budgets), contract, &pool)

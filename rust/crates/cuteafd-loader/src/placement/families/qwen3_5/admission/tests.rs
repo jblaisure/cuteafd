@@ -27,7 +27,7 @@ fn request() -> Request {
 
 fn facts<'a>(cfg: &'a Qwen35Config, weights: &'a NativeWeights, buffers: &'a NativeBuffers,
     target_arena: &'a crate::serving_capacity::WeightArenaLayout) -> DenseFacts<'a> {
-    DenseFacts { graph_variant: "fixture".into(), graphs_enabled: true, cfg, weights, target_arena, buffers, slots: 4, record_bytes: 4096, drafter: None, blas_head: serving::BlasHead::TensorLt, serving: None,
+    DenseFacts { target_pool: None, graph_variant: "fixture".into(), graphs_enabled: true, cfg, weights, target_arena, buffers, slots: 4, record_bytes: 4096, drafter: None, blas_head: serving::BlasHead::TensorLt, serving: None,
         host_prefix: serving::HostPrefixOwners { quota_bytes: 0, chunk_bytes: 0 }, verify_check: false }
 }
 
