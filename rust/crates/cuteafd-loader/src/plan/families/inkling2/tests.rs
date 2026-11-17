@@ -670,6 +670,14 @@ fn shared_recipe_charges_every_owner_once_on_one_and_two_rtx() {
                 if template.id == format!("inkling2.cache.{gpu}.active"))), "rtx{gpu} marks");
         }
         let admitted = inputs.admit(request.clone()).unwrap();
+        assert_eq!(admitted.solved.pool_policy, Some(inputs.pool));
+        let mut sampled = inputs.clone();
+        for budget in sampled.budgets.iter_mut().take(gpus) {
+            let crate::placement::planner::Baseline::Forecast { occupied, .. } = budget.baseline else { panic!("forecast baseline") };
+            budget.baseline = crate::placement::planner::Baseline::Sampled { free: budget.physical_bytes - occupied,
+                phase: crate::placement::planner::Phase::Load, source: "same preweight sample".into() };
+        }
+        assert_eq!(admitted.solved.pool_policy, sampled.admit(request.clone()).unwrap().solved.pool_policy);
         use cuteafd_core::memory_policy::MemoryPolicy;
         let grow = MemoryPolicy { kv_max: Some(100_000_000), ..Default::default() };
         let grown = grow.scoped(|| {

@@ -667,6 +667,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn prepared_pool_is_shared_by_forecast_and_sampled_admission() {
+        use cuteafd_core::memory_policy::MemoryPolicy;
+        let cfg = GlmNextConfig::from_hf(&crate::plan::testing::glm5_flash_config(4)).unwrap();
+        for gpus in [1, 2] {
+            let input = inputs(&cfg, gpus, inventory::PRO_TOTAL_BYTES);
+            let default = MemoryPolicy::default().scoped(|| contract(&input)).unwrap();
+            let process = admission::ProcessOwners::new((512 << 30, 512 << 30), 8 << 30)
+                .with_spark_capacities(crate::serving_capacity::spark_memory::serving_bytes());
+            let prepared = MemoryPolicy { kv_max: Some(100_000_000), ..Default::default() }
+                .scoped(|| admission::prepare(&input, 188, true, process)).unwrap();
+            let pool = prepared.pool;
+            let grown = prepared.admit().unwrap();
+            assert_eq!(grown.solved.pool_policy, Some(pool));
+            assert_eq!(grown.placement.onboard_layers, default.placement.onboard_layers);
+            assert!(grown.solved.pool_tokens > default.solved.pool_tokens);
+            let runtime = MemoryPolicy { kv_max: Some(100_000_000), ..Default::default() }
+                .scoped(|| contract(&sampled(&input))).unwrap();
+            assert_eq!(grown.solved.pool_policy, runtime.solved.pool_policy);
+            let mut explicit = input.clone();
+            explicit.requested_pool = Some(default.solved.pool_tokens);
+            let pinned = MemoryPolicy { kv_max: Some(100_000_000), ..Default::default() }
+                .scoped(|| contract(&explicit)).unwrap();
+            assert_eq!(pinned.solved.pool_tokens, default.solved.pool_tokens);
+        }
+    }
+
+    #[test]
     fn tp2_dflash_whole_home_matches_plan_and_serve_without_remote_candidate() {
         let cfg = GlmNextConfig::from_hf(&crate::plan::testing::glm5_flash_config(4)).unwrap();
         for heavy in [0, 1] {
